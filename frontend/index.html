@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="SecureSign Cloud - nền tảng ký số và xác thực PDF đa người dùng">
+  <meta name="theme-color" content="#142b4a">
+  <title>SecureSign Cloud | PDF Digital Signature</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="auth-view" class="auth-view">
+    <div class="auth-brand"><span class="brand-mark">S</span><div><strong>SecureSign Cloud</strong><small>MULTI-USER DIGITAL SIGNATURE</small></div></div>
+    <div class="auth-card panel">
+      <div class="auth-heading"><span class="eyebrow">SECURE DOCUMENT WORKFLOW</span><h1 id="auth-title">Chào mừng trở lại</h1><p id="auth-subtitle">Đăng nhập để quản lý tài liệu và chữ ký số của bạn.</p></div>
+      <div id="auth-notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <form id="login-form" class="auth-form">
+        <label class="field-label" for="login-email">Email</label>
+        <input class="input" id="login-email" type="email" autocomplete="username" required maxlength="254" placeholder="name@example.com">
+        <label class="field-label" for="login-password">Mật khẩu</label>
+        <input class="input" id="login-password" type="password" autocomplete="current-password" required placeholder="Nhập mật khẩu">
+        <button class="btn btn-primary full" type="submit" id="login-button">Đăng nhập <span>→</span></button>
+        <div class="auth-links"><button type="button" id="forgot-password-link">Quên mật khẩu?</button><button type="button" id="resend-verification-link">Gửi lại email xác minh</button></div>
+      </form>
+      <form id="register-form" class="auth-form hidden">
+        <label class="field-label" for="register-name">Họ và tên</label>
+        <input class="input" id="register-name" autocomplete="name" required minlength="2" maxlength="120" placeholder="Nguyễn Văn A">
+        <label class="field-label" for="register-email">Email</label>
+        <input class="input" id="register-email" type="email" autocomplete="email" required maxlength="254" placeholder="name@example.com">
+        <label class="field-label" for="register-password">Mật khẩu</label>
+        <input class="input" id="register-password" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="Ít nhất 12 ký tự">
+        <label class="field-label" for="register-confirm">Xác nhận mật khẩu</label>
+        <input class="input" id="register-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="Nhập lại mật khẩu">
+        <button class="btn btn-primary full" type="submit" id="register-button">Tạo tài khoản miễn phí <span>→</span></button>
+      </form>
+      <form id="forgot-form" class="auth-form hidden">
+        <label class="field-label" for="forgot-email">Email tài khoản</label>
+        <input class="input" id="forgot-email" type="email" required maxlength="254" placeholder="name@example.com">
+        <button class="btn btn-primary full" type="submit" id="forgot-button">Gửi liên kết đặt lại mật khẩu</button>
+        <button class="text-btn auth-back" type="button" data-auth-back>Quay lại đăng nhập</button>
+      </form>
+      <form id="resend-form" class="auth-form hidden">
+        <label class="field-label" for="resend-email">Email tài khoản</label>
+        <input class="input" id="resend-email" type="email" required maxlength="254" placeholder="name@example.com">
+        <button class="btn btn-primary full" type="submit" id="resend-button">Gửi lại email xác minh</button>
+        <button class="text-btn auth-back" type="button" data-auth-back>Quay lại đăng nhập</button>
+      </form>
+      <form id="reset-form" class="auth-form hidden">
+        <input id="reset-token" type="hidden">
+        <label class="field-label" for="reset-password">Mật khẩu mới</label>
+        <input class="input" id="reset-password" type="password" required minlength="12" maxlength="128" autocomplete="new-password" placeholder="Ít nhất 12 ký tự">
+        <label class="field-label" for="reset-confirm">Xác nhận mật khẩu mới</label>
+        <input class="input" id="reset-confirm" type="password" required minlength="12" maxlength="128" autocomplete="new-password" placeholder="Nhập lại mật khẩu">
+        <button class="btn btn-primary full" type="submit" id="reset-button">Đặt lại mật khẩu</button>
+      </form>
+      <div class="auth-switch" id="auth-switch"><span id="auth-switch-label">Chưa có tài khoản?</span> <button type="button" id="auth-switch-button">Đăng ký ngay</button></div>
+      <p class="auth-footnote">Private Key được tạo và bảo vệ trên thiết bị của bạn. SecureSign không yêu cầu tải Private Key dạng rõ lên máy chủ.</p>
+    </div>
+    <div class="auth-bottom">RSA-PSS · SHA-256 · AES-256-GCM · Secure session</div>
+  </section>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard"><span class="brand-mark">S</span><span><strong>SecureSign</strong><small>CLOUD WORKSPACE</small></span></a>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="nav">
+        <button class="nav-link active" data-page="dashboard"><span>⌂</span> Tổng quan</button>
+        <button class="nav-link" data-page="sign"><span>✍</span> Ký tài liệu</button>
+        <button class="nav-link" data-page="verify"><span>✓</span> Xác thực chữ ký</button>
+        <button class="nav-link" data-page="keys"><span>⚿</span> Quản lý khóa</button>
+        <button class="nav-link" data-page="send"><span>➤</span> Gửi tài liệu</button>
+        <button class="nav-link" data-page="inbox"><span>▣</span> Hộp thư tài liệu</button>
+        <button class="nav-link" data-page="history"><span>◷</span> Lịch sử</button>
+        <button class="nav-link hidden" id="admin-nav" data-page="admin"><span>⚙</span> Quản trị</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="security-note"><span class="shield">◆</span><strong>Bảo mật khóa riêng</strong><p>Private Key được mã hóa và xử lý tại trình duyệt, không gửi lên máy chủ.</p></div>
+        <small>RSA-PSS · SHA-256 · v2.0.0</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><span class="top-kicker">MULTI-USER DIGITAL DOCUMENT SECURITY</span><h1 id="page-title">Tổng quan</h1></div>
+        <div class="top-actions"><span class="connection"><i></i><span id="server-status">Đang kết nối</span></span><div class="user-chip"><span class="avatar" id="user-avatar">SS</span><span><strong id="user-name">Người dùng</strong><small id="user-email">—</small></span></div><button class="btn btn-outline small" id="logout-button">Đăng xuất</button></div>
+      </header>
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+
+      <section class="page active" id="page-dashboard">
+        <div class="welcome panel"><div><span class="eyebrow">YOUR SECURE WORKSPACE</span><h2>Ký số an toàn. Kết nối mọi người.</h2><p>Tạo chữ ký số RSA-PSS, gửi tài liệu PDF đến người dùng khác và xác thực tính toàn vẹn trong một không gian làm việc riêng.</p><button class="btn btn-primary" data-go="sign">Bắt đầu ký tài liệu <b>→</b></button></div><div class="hero-art"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="doc-art"><span>PDF</span><i></i><i></i><i></i><b>✓</b></div><div class="lock-art">◆</div></div></div>
+        <div class="stats stats-five">
+          <article class="stat panel"><span class="stat-icon blue">✍</span><small>Lượt ký của bạn</small><strong id="stat-sign">0</strong><em>Đã xác minh và ghi nhận</em></article>
+          <article class="stat panel"><span class="stat-icon green">✓</span><small>Xác thực hợp lệ</small><strong id="stat-valid">0</strong><em>Trong lịch sử cá nhân</em></article>
+          <article class="stat panel"><span class="stat-icon amber">⚿</span><small>Khóa RSA của bạn</small><strong id="stat-keys">0</strong><em>Đang hoạt động</em></article>
+          <article class="stat panel"><span class="stat-icon blue">▣</span><small>Tài liệu nhận</small><strong id="stat-inbox">0</strong><em>Trong hộp thư</em></article>
+          <article class="stat panel"><span class="stat-icon green">➤</span><small>Tài liệu đã gửi</small><strong id="stat-sent">0</strong><em>Đến người dùng khác</em></article>
+        </div>
+        <div class="section-heading"><div><h3>Quy trình làm việc</h3><p>Bốn bước để ký và trao đổi tài liệu an toàn</p></div></div>
+        <div class="workflow workflow-four">
+          <article class="workflow-card panel"><span>01</span><div class="wf-icon">⚿</div><h3>Tạo cặp khóa RSA</h3><p>Tạo khóa riêng và khóa công khai. Mã hóa Private Key bằng mật khẩu.</p><button class="text-btn" data-go="keys">Quản lý khóa →</button></article>
+          <article class="workflow-card panel"><span>02</span><div class="wf-icon">✍</div><h3>Ký tài liệu PDF</h3><p>Ký dữ liệu PDF bằng Private Key với RSA-PSS và SHA-256.</p><button class="text-btn" data-go="sign">Đi đến ký tài liệu →</button></article>
+          <article class="workflow-card panel"><span>03</span><div class="wf-icon">➤</div><h3>Gửi tài liệu</h3><p>Gửi PDF và chữ ký đến tài khoản người nhận trong hệ thống.</p><button class="text-btn" data-go="send">Gửi tài liệu →</button></article>
+          <article class="workflow-card panel"><span>04</span><div class="wf-icon">✓</div><h3>Xác thực chữ ký</h3><p>Kiểm tra chữ ký, khóa công khai và tính toàn vẹn tài liệu.</p><button class="text-btn" data-go="verify">Xác thực →</button></article>
+        </div>
+        <div class="panel info-strip"><span>ⓘ</span><div><strong>Phạm vi bảo vệ</strong><p>Dữ liệu tài khoản, khóa, tài liệu và lịch sử được phân tách theo người dùng. Khóa công khai có thể được tra cứu; tài liệu chỉ người gửi và người nhận được phép truy cập.</p></div></div>
+      </section>
+
+      <section class="page" id="page-sign">
+        <div class="page-intro"><span class="eyebrow">SENDER WORKFLOW</span><h2>Ký tài liệu PDF</h2><p>Chọn PDF và tệp Private Key đã mã hóa. Hệ thống giải mã khóa trong trình duyệt, ký dữ liệu bằng RSA-PSS và xác minh lại chữ ký trước khi ghi nhận.</p></div>
+        <div class="two-col">
+          <div class="panel form-panel">
+            <div class="panel-title"><span class="step">01</span><div><h3>Thông tin tài liệu</h3><p>PDF tối đa 25 MB</p></div></div>
+            <label class="dropzone" for="sign-pdf"><span class="upload-symbol">↑</span><strong>Chọn tài liệu PDF</strong><small>Chỉ hỗ trợ PDF · Tối đa 25 MB</small><input id="sign-pdf" type="file" accept="application/pdf,.pdf"></label>
+            <div id="sign-file-info" class="file-info hidden"></div>
+            <div class="divider"></div>
+            <label class="field-label" for="sign-private-key">Private Key đã mã hóa (.key.json)</label><input class="file-input" id="sign-private-key" type="file" accept=".json,.key">
+            <label class="field-label" for="sign-password">Mật khẩu Private Key</label><input class="input" id="sign-password" type="password" autocomplete="current-password" placeholder="Mật khẩu đã dùng khi tạo khóa">
+            <button class="btn btn-primary full" id="sign-button">Tạo chữ ký số <span>→</span></button>
+            <p class="microcopy">Private Key được giải mã cục bộ trong trình duyệt. Máy chủ chỉ nhận PDF và chữ ký để kiểm tra và ghi nhận sự kiện.</p>
+          </div>
+          <div class="panel result-panel"><div class="panel-title"><div><h3>Kết quả ký số</h3><p>Thông tin chữ ký sau khi hoàn tất</p></div><span class="pill neutral" id="sign-status">Chưa ký</span></div>
+            <div class="result-empty" id="sign-empty"><div class="empty-icon">✍</div><strong>Chưa có chữ ký</strong><p>Chọn PDF và khóa riêng để bắt đầu.</p></div>
+            <div id="sign-result" class="hidden"><div class="success-banner"><span>✓</span><div><strong>Đã tạo chữ ký số</strong><small>Chữ ký đã được kiểm tra với Public Key tương ứng.</small></div></div><div class="detail-row"><span>Tên tài liệu</span><strong id="signed-name">—</strong></div><div class="detail-row"><span>SHA-256</span><code id="signed-hash">—</code></div><div class="detail-row"><span>Fingerprint khóa</span><code id="signed-fingerprint">—</code></div><button class="btn btn-secondary full" id="download-signature">↓ Tải chữ ký .sig</button><p class="microcopy">Để gửi cho người khác, tải chữ ký xuống rồi mở mục “Gửi tài liệu”.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-verify">
+        <div class="page-intro"><span class="eyebrow">RECEIVER WORKFLOW</span><h2>Xác thực chữ ký</h2><p>Kiểm tra chữ ký tách rời bằng Public Key trong danh bạ hoặc khóa PEM tải lên. Trạng thái tin cậy được quản lý riêng cho từng tài khoản.</p></div>
+        <div class="two-col"><div class="panel form-panel"><div class="panel-title"><span class="step">02</span><div><h3>Dữ liệu xác thực</h3><p>Chọn PDF, chữ ký và Public Key</p></div></div>
+          <label class="field-label" for="verify-pdf">Tài liệu PDF</label><input class="file-input" id="verify-pdf" type="file" accept="application/pdf,.pdf">
+          <label class="field-label" for="verify-signature">Chữ ký tách rời (.sig)</label><input class="file-input" id="verify-signature" type="file" accept=".sig,application/octet-stream">
+          <label class="field-label" for="verify-key-select">Public Key trong danh bạ</label><select class="input" id="verify-key-select"><option value="">-- Chọn Public Key --</option></select>
+          <div class="or-divider"><span>HOẶC</span></div><label class="field-label" for="verify-public-key">Tải Public Key PEM</label><input class="file-input" id="verify-public-key" type="file" accept=".pem,.pub,.txt">
+          <button class="btn btn-primary full" id="verify-button">Xác thực chữ ký <span>→</span></button>
+        </div><div class="panel result-panel"><div class="panel-title"><div><h3>Kết quả xác thực</h3><p>Kiểm tra mật mã và trạng thái tin cậy</p></div><span class="pill neutral" id="verify-status">Chưa kiểm tra</span></div><div class="result-empty" id="verify-empty"><div class="empty-icon">⌕</div><strong>Chờ xác thực</strong><p>Kết quả sẽ hiển thị tại đây.</p></div><div id="verify-result" class="hidden"><div id="verify-banner" class="success-banner"><span id="verify-symbol">✓</span><div><strong id="verify-heading">Chữ ký hợp lệ</strong><small id="verify-message"></small></div></div><div class="detail-row"><span>Tài liệu</span><strong id="verify-name">—</strong></div><div class="detail-row"><span>SHA-256</span><code id="verify-hash">—</code></div><div class="detail-row"><span>Fingerprint</span><code id="verify-fingerprint">—</code></div><div class="trust-box" id="trust-box">Trạng thái tin cậy: chưa xác định</div></div></div></div>
+      </section>
+
+      <section class="page" id="page-keys">
+        <div class="page-intro"><span class="eyebrow">IDENTITY & KEY MANAGEMENT</span><h2>Quản lý khóa</h2><p>Mỗi tài khoản tự tạo và giữ Private Key. SecureSign chỉ lưu Public Key để xác thực và trao đổi tài liệu.</p></div>
+        <div class="two-col keys-layout"><div class="panel form-panel"><div class="panel-title"><span class="step">01</span><div><h3>Tạo cặp khóa RSA</h3><p>RSA-PSS 2048-bit · SHA-256</p></div></div>
+          <label class="field-label" for="key-owner">Tên / nhãn khóa</label><input class="input" id="key-owner" maxlength="100" placeholder="Khóa cá nhân">
+          <label class="field-label" for="new-key-password">Mật khẩu mã hóa Private Key</label><input class="input" id="new-key-password" type="password" autocomplete="new-password" placeholder="Tối thiểu 12 ký tự">
+          <label class="field-label" for="confirm-key-password">Xác nhận mật khẩu</label><input class="input" id="confirm-key-password" type="password" autocomplete="new-password" placeholder="Nhập lại mật khẩu">
+          <button class="btn btn-primary full" id="generate-keys">Tạo cặp khóa RSA <span>→</span></button>
+          <div id="generated-key-result" class="key-generated hidden"><div class="success-banner"><span>✓</span><div><strong>Đã tạo cặp khóa</strong><small>Tải và lưu Private Key ở nơi an toàn.</small></div></div><button class="btn btn-secondary full" id="download-private">↓ Tải Private Key đã mã hóa</button><button class="btn btn-secondary full" id="download-public">↓ Tải Public Key PEM</button><button class="btn btn-outline full" id="register-generated">Đăng ký Public Key vào tài khoản</button></div>
+          <div class="divider"></div>
+          <div class="panel-title"><div><h3>Đăng ký khóa đã có</h3><p>Nhập file Private Key mã hóa từ phiên bản trước hoặc thiết bị khác</p></div></div>
+          <label class="field-label" for="import-key-file">Private Key đã mã hóa (.key.json)</label><input class="file-input" id="import-key-file" type="file" accept=".json,.key">
+          <label class="field-label" for="import-key-password">Mật khẩu Private Key</label><input class="input" id="import-key-password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu của file khóa">
+          <button class="btn btn-outline full" id="import-register-key">Giải mã cục bộ và đăng ký khóa hiện có</button>
+        </div><div class="panel form-panel"><div class="panel-title"><div><h3>Khóa của tôi</h3><p>Chỉ hiển thị khóa thuộc tài khoản đang đăng nhập</p></div><span class="pill neutral" id="key-count">0 khóa</span></div><div id="my-keys-list" class="list-empty">Bạn chưa đăng ký Public Key nào.</div></div></div>
+        <div class="panel table-panel directory-panel"><div class="table-toolbar"><div><h3>Danh bạ Public Key</h3><p>Khóa công khai của người dùng đang hoạt động</p></div><input class="input directory-search" id="directory-search" placeholder="Tìm theo tên hoặc email"></div><div class="table-wrap"><table><thead><tr><th>CHỦ SỞ HỮU</th><th>TÊN KHÓA</th><th>FINGERPRINT</th><th>TRẠNG THÁI TIN CẬY</th><th>THAO TÁC</th></tr></thead><tbody id="directory-body"><tr><td colspan="5" class="empty-cell">Chưa có khóa công khai.</td></tr></tbody></table></div></div>
+      </section>
+
+      <section class="page" id="page-send">
+        <div class="page-intro"><span class="eyebrow">DOCUMENT EXCHANGE</span><h2>Gửi tài liệu cho người dùng</h2><p>Máy chủ kiểm tra chữ ký bằng Public Key thuộc tài khoản của bạn trước khi lưu và chuyển tài liệu vào hộp thư người nhận.</p></div>
+        <div class="panel form-panel send-panel"><div class="panel-title"><span class="step">03</span><div><h3>Thông tin gửi tài liệu</h3><p>Chỉ gửi được chữ ký hợp lệ bằng khóa của tài khoản hiện tại</p></div></div>
+          <div class="two-col send-fields"><div><label class="field-label" for="send-recipient">Email người nhận</label><input class="input" id="send-recipient" type="email" maxlength="254" placeholder="recipient@example.com"></div><div><label class="field-label" for="send-key-select">Khóa công khai dùng để ký</label><select class="input" id="send-key-select"><option value="">-- Chọn khóa của tôi --</option></select></div></div>
+          <label class="field-label" for="send-pdf">PDF gốc</label><input class="file-input" id="send-pdf" type="file" accept="application/pdf,.pdf">
+          <label class="field-label" for="send-signature">Chữ ký số (.sig)</label><input class="file-input" id="send-signature" type="file" accept=".sig,application/octet-stream">
+          <label class="field-label" for="send-message">Lời nhắn (không bắt buộc)</label><textarea class="input message-input" id="send-message" maxlength="1000" placeholder="Nội dung gửi kèm tài liệu..."></textarea>
+          <button class="btn btn-primary" id="send-button">Kiểm tra và gửi tài liệu <span>→</span></button>
+        </div>
+      </section>
+
+      <section class="page" id="page-inbox">
+        <div class="page-intro"><span class="eyebrow">DOCUMENT EXCHANGE</span><h2>Hộp thư tài liệu</h2><p>Tài liệu gửi đến bạn và tài liệu bạn đã chuyển cho người khác. Chỉ người gửi và người nhận được truy cập tệp.</p></div>
+        <div class="panel table-panel"><div class="table-toolbar"><div><h3 id="documents-heading">Tài liệu nhận</h3><p>Danh sách tài liệu riêng của tài khoản</p></div><div class="toolbar-actions"><button class="btn btn-outline small active" data-doc-mode="inbox">Hộp thư đến</button><button class="btn btn-outline small" data-doc-mode="sent">Đã gửi</button><button class="btn btn-outline small" id="refresh-documents">↻ Làm mới</button></div></div><div class="table-wrap"><table><thead><tr><th>THỜI GIAN</th><th>TÀI LIỆU</th><th>NGƯỜI GỬI / NHẬN</th><th>TRẠNG THÁI</th><th>THAO TÁC</th></tr></thead><tbody id="documents-body"><tr><td colspan="5" class="empty-cell">Chưa có tài liệu.</td></tr></tbody></table></div></div>
+      </section>
+
+      <section class="page" id="page-history">
+        <div class="page-intro"><span class="eyebrow">PERSONAL AUDIT TRAIL</span><h2>Lịch sử hoạt động</h2><p>Chỉ hiển thị sự kiện do tài khoản hiện tại thực hiện. Nhật ký hệ thống ghi nhận các thao tác xác thực, ký, gửi tài liệu và quản lý khóa.</p></div>
+        <div class="panel table-panel"><div class="table-toolbar"><div><h3>Hoạt động gần đây</h3><p>Tối đa 200 sự kiện mới nhất của bạn</p></div><button class="btn btn-outline small" id="refresh-history">↻ Làm mới</button></div><div class="table-wrap"><table><thead><tr><th>THỜI GIAN</th><th>HOẠT ĐỘNG</th><th>TÀI LIỆU / ĐỐI TƯỢNG</th><th>KẾT QUẢ</th><th>SHA-256</th></tr></thead><tbody id="history-body"><tr><td colspan="5" class="empty-cell">Chưa có dữ liệu.</td></tr></tbody></table></div></div>
+      </section>
+
+      <section class="page" id="page-admin">
+        <div class="page-intro"><span class="eyebrow">SYSTEM ADMINISTRATION</span><h2>Quản trị người dùng</h2><p>Chỉ quản trị viên mới được xem và cập nhật trạng thái tài khoản. Người dùng thông thường không thể tự nâng quyền.</p></div>
+        <div class="stats stats-four"><article class="stat panel"><small>Tổng tài khoản</small><strong id="admin-total-users">0</strong></article><article class="stat panel"><small>Đang hoạt động</small><strong id="admin-active-users">0</strong></article><article class="stat panel"><small>Khóa đang hoạt động</small><strong id="admin-total-keys">0</strong></article><article class="stat panel"><small>Tài liệu đã trao đổi</small><strong id="admin-total-docs">0</strong></article></div>
+        <div class="panel table-panel"><div class="table-toolbar"><div><h3>Danh sách tài khoản</h3><p>Tìm kiếm, khóa/mở tài khoản và phân quyền</p></div><input class="input directory-search" id="admin-search" placeholder="Tìm tên hoặc email"></div><div class="table-wrap"><table><thead><tr><th>NGƯỜI DÙNG</th><th>VAI TRÒ</th><th>TRẠNG THÁI</th><th>KHÓA</th><th>TÀI LIỆU</th><th>THAO TÁC</th></tr></thead><tbody id="admin-users-body"><tr><td colspan="6" class="empty-cell">Chưa có dữ liệu.</td></tr></tbody></table></div></div>
+      </section>
+      <footer class="app-footer"><span>SecureSign Cloud · RSA-PSS / SHA-256</span><span>Đồ án nghiên cứu · Chưa phải dịch vụ ký số pháp lý</span></footer>
+    </main>
+  </div>
+</body>
+</html>
