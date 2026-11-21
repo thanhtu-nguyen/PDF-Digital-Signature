@@ -40,9 +40,12 @@ function ecdsaRawToDer(raw) {
 
 // Sign, then check the signature with the matching public key before it leaves the browser.
 async function signAndCheck(alg, privateKey, publicKey, data) {
-  const params = ALGORITHMS[alg];
-  const raw = new Uint8Array(await crypto.subtle.sign(params.signParams, privateKey, data));
-  if (!(await crypto.subtle.verify(params.signParams, publicKey, raw, data))) throw new Error("Private Key và Public Key trong tệp khóa không khớp nhau.");
+  const p = ALGORITHMS[alg].signParams;
+  const raw = new Uint8Array(
+      await crypto.subtle.sign(p, privateKey, data));
+  if (!(await crypto.subtle.verify(p, publicKey, raw, data)))
+    throw new Error("Private Key và Public Key trong tệp khóa không khớp nhau.");
+  // ECDSA: Web Crypto returns r||s; server and OpenSSL expect DER
   return alg === "ECDSA-P256" ? ecdsaRawToDer(raw) : raw;
 }
 
@@ -253,8 +256,7 @@ document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", 
 
 async function checkHealth() {
   try {
-    const health = await api("/api/health");
-    $("lab-nav").classList.toggle("hidden", !health.security_lab);
+    await api("/api/health");
     $("server-status").textContent = "Máy chủ hoạt động";
     $("server-status").parentElement.classList.add("online");
   } catch {

@@ -81,12 +81,10 @@ def test_registering_someone_elses_public_key_is_rejected():
         assert eve.get("/api/keys/mine").json()["items"] == []
 
 
-def test_security_headers_and_lab_csp():
+def test_security_headers_and_strict_csp():
     with TestClient(app) as client:
         home = client.get("/")
-        assert "script-src 'self';" in home.headers["content-security-policy"]
-        assert "'unsafe-inline'" not in home.headers["content-security-policy"]
-        page = client.get("/lab")
-        csp = page.headers["content-security-policy"]
-        assert "script-src 'self';" in csp and "style-src 'self' 'unsafe-inline'" in csp
-        assert page.headers["x-frame-options"] == "DENY"
+        csp = home.headers["content-security-policy"]
+        assert "script-src 'self';" in csp and "'unsafe-inline'" not in csp
+        assert home.headers["x-frame-options"] == "DENY"
+        assert home.headers["x-content-type-options"] == "nosniff"

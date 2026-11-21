@@ -1,6 +1,6 @@
 # SecureSign Cloud 2.1 — Hướng dẫn chi tiết (tiếng Việt)
 
-> README chính của bài nộp nằm ở `../README.md`. Tài liệu này giữ hướng dẫn triển khai, phân quyền và danh sách API của SecureSign. Bản cuối kỳ bổ sung **Security Lab** (`/lab`, bật mặc định khi chạy cục bộ, tắt khi `APP_ENV=production` trừ khi đặt `SECURESIGN_LAB_ENABLED=true`) và biến `TRUST_PROXY_HEADERS` (chỉ tin `X-Forwarded-For` khi chạy sau reverse proxy như Caddy/Vercel).
+> README chính của bài nộp nằm ở `../README.md`. Tài liệu này giữ hướng dẫn triển khai, phân quyền và danh sách API của SecureSign. Bản cuối kỳ bổ sung chữ ký ECDSA P-256, biên nhận ký số chống chối bỏ, tài khoản mẫu và biến `TRUST_PROXY_HEADERS` (chỉ tin `X-Forwarded-For` khi chạy sau reverse proxy như Caddy/Vercel).
 
 Nền tảng web ký số PDF RSA-PSS/SHA-256 dành cho nhiều tài khoản. Người dùng tự đăng ký, đăng nhập, tạo khóa riêng, ký PDF, gửi tài liệu cho người dùng khác và xác thực chữ ký. Dữ liệu tài khoản, khóa, tài liệu và lịch sử được phân tách theo quyền truy cập.
 

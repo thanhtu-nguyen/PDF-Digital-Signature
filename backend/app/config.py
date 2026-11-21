@@ -39,9 +39,6 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 # Only trust X-Forwarded-For when a reverse proxy that overwrites it sits in front
 # of the app (Vercel, or Caddy in docker-compose). Otherwise clients can spoof it.
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true" if IS_VERCEL else "false").lower() == "true"
-# Security Lab: the attack/defense demonstration used in the course report.
-# On by default for local development, off by default in production.
-LAB_ENABLED = os.getenv("SECURESIGN_LAB_ENABLED", "false" if APP_ENV == "production" else "true").lower() == "true"
 # Demo accounts (admin/alice/bob/charlie, see README) so the app can be tested without registering.
 # Their passwords are public, so they are on by default only outside production.
 DEMO_ACCOUNTS = os.getenv("SECURESIGN_DEMO_ACCOUNTS", "false" if APP_ENV == "production" else "true").lower() == "true"

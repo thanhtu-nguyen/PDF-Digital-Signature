@@ -14,10 +14,9 @@ from sqlalchemy import select
 from backend.app.database import EvidenceEntry, SessionLocal
 from backend.app.evidence import GENESIS_HASH, build_entry, verify_entries, verify_receipt_bundle
 from backend.app.main import app
-from backend.lab.pdf_tools import make_pdf
 
 ROOT = Path(__file__).resolve().parents[1]
-PDF = make_pdf("CONTRACT #2026-11: Alice pays Bob 1,000 USD", title="SecureSign Contract")
+PDF = (ROOT / "demo_data" / "contract-demo.pdf").read_bytes()
 
 
 def new_user(prefix):
@@ -126,3 +125,20 @@ def test_verify_entries_pure_chain():
     assert verify_entries(chain, key.public_key())["ok"]
     assert verify_entries(chain[:1] + chain[2:], key.public_key())["broken_at"] == 3       # deleted entry
     assert verify_entries(list(reversed(chain)), key.public_key())["ok"] is False           # reordered
+
+
+def test_receipt_key_from_environment(monkeypatch):
+    """Deployments provide the receipt key as SECURESIGN_RECEIPT_KEY_PEM; a wrong key type is refused."""
+    import pytest
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from backend.app.evidence import _load_or_create_server_key, key_fingerprint
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption()).decode()
+    monkeypatch.setenv("SECURESIGN_RECEIPT_KEY_PEM", pem.replace("\n", "\\n"))     # escaped form, as in Vercel
+    assert key_fingerprint(_load_or_create_server_key(None).public_key()) == key_fingerprint(key.public_key())
+    wrong = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    monkeypatch.setenv("SECURESIGN_RECEIPT_KEY_PEM", wrong)
+    with pytest.raises(RuntimeError):
+        _load_or_create_server_key(None)

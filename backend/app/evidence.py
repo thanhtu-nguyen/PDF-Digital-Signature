@@ -52,20 +52,29 @@ def key_fingerprint(public_key) -> str:
     return sha256_hex(public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
 
 
-def build_entry(private_key, seq: int, prev_hash: str, event: str, actor: dict, details: dict, time_iso: str | None = None) -> dict:
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+def build_entry(key, seq, prev_hash, event, actor, details,
+                time_iso=None):
     """Create one chained, signed evidence entry."""
-    body = {
-        "type": RECEIPT_TYPE, "version": 1, "seq": seq,
-        "time": time_iso or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "event": event, "actor": actor, "details": details, "prev_hash": prev_hash,
-    }
-    body_bytes = canonical(body)
-    signature = private_key.sign(body_bytes, ec.ECDSA(hashes.SHA256()))
-    return {"seq": seq, "body": body_bytes.decode("utf-8"), "entry_hash": sha256_hex(body_bytes),
-            "signature": base64.b64encode(signature).decode()}
+    body = {"type": RECEIPT_TYPE, "version": 1, "seq": seq,
+            "time": time_iso or utc_now_iso(), "event": event,
+            "actor": actor, "details": details,
+            "prev_hash": prev_hash}
+    body_bytes = canonical(body)     # sorted keys: exact signed bytes
+    signature = key.sign(body_bytes, ec.ECDSA(hashes.SHA256()))
+    return {"seq": seq, "body": body_bytes.decode(),
+            "entry_hash": sha256_hex(body_bytes),
+            "signature": b64(signature)}
 
 
-def _signature_ok(public_key, body: str, signature_b64: str) -> bool:
+def signature_ok(public_key, body: str, signature_b64: str) -> bool:
     try:
         public_key.verify(base64.b64decode(signature_b64, validate=True), body.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
         return True
@@ -73,26 +82,38 @@ def _signature_ok(public_key, body: str, signature_b64: str) -> bool:
         return False
 
 
-def verify_entries(entries, public_key) -> dict:
+def parse_body(entry) -> dict:
+    try:
+        body = json.loads(entry["body"])
+        return body if isinstance(body, dict) else {}
+    except ValueError:
+        return {}
+
+
+OK_REASON = "Toàn bộ chuỗi bằng chứng nguyên vẹn."
+
+
+def verify_entries(entries, public_key):
     """Check a whole chain (ordered by seq). Returns where and why it breaks, if it does."""
     prev_hash, expected_seq = GENESIS_HASH, 1
-    for entry in entries:
-        seq = entry["seq"]
-        try:
-            body = json.loads(entry["body"])
-        except ValueError:
-            return {"ok": False, "count": seq - 1, "broken_at": seq, "reason": "Nội dung mục không phải JSON hợp lệ."}
-        if seq != expected_seq or body.get("seq") != seq:
-            return {"ok": False, "count": expected_seq - 1, "broken_at": seq, "reason": f"Thiếu hoặc đảo thứ tự mục: mong đợi #{expected_seq}."}
+
+    def broken(e, reason):        # entries before e are intact
+        return {"ok": False, "count": expected_seq - 1,
+                "broken_at": e["seq"], "reason": reason}
+
+    for e in entries:
+        body = parse_body(e)
+        if e["seq"] != expected_seq or body.get("seq") != e["seq"]:
+            return broken(e, "Thiếu hoặc đảo thứ tự mục.")
         if body.get("prev_hash") != prev_hash:
-            return {"ok": False, "count": seq - 1, "broken_at": seq, "reason": "prev_hash không khớp với mục trước: chuỗi bị cắt hoặc bị chèn."}
-        if sha256_hex(entry["body"].encode("utf-8")) != entry["entry_hash"]:
-            return {"ok": False, "count": seq - 1, "broken_at": seq, "reason": "Nội dung đã bị sửa: SHA-256 không khớp entry_hash."}
-        if not _signature_ok(public_key, entry["body"], entry["signature"]):
-            return {"ok": False, "count": seq - 1, "broken_at": seq, "reason": "Chữ ký của máy chủ không hợp lệ: mục đã bị làm giả."}
-        prev_hash, expected_seq = entry["entry_hash"], seq + 1
-    return {"ok": True, "count": expected_seq - 1, "broken_at": None, "reason": "Toàn bộ chuỗi bằng chứng nguyên vẹn.",
-            "head_hash": prev_hash}
+            return broken(e, "prev_hash không khớp: chuỗi bị cắt hoặc chèn.")
+        if sha256_hex(e["body"].encode()) != e["entry_hash"]:
+            return broken(e, "Nội dung đã bị sửa: SHA-256 không khớp.")
+        if not signature_ok(public_key, e["body"], e["signature"]):
+            return broken(e, "Chữ ký của máy chủ không hợp lệ: mục bị làm giả.")
+        prev_hash, expected_seq = e["entry_hash"], e["seq"] + 1
+    return {"ok": True, "count": expected_seq - 1, "broken_at": None,
+            "head_hash": prev_hash, "reason": OK_REASON}
 
 
 def receipt_bundle(entry: dict, public_key_pem: str) -> dict:
@@ -123,7 +144,7 @@ def verify_receipt_bundle(bundle: dict, trusted_public_key=None) -> dict:
         return {"valid": False, "reason": "Biên nhận không được ký bởi khóa của máy chủ SecureSign này."}
     if sha256_hex(body.encode("utf-8")) != bundle.get("entry_hash"):
         return {"valid": False, "reason": "entry_hash không khớp với nội dung."}
-    if not _signature_ok(key, body, bundle.get("signature", "")):
+    if not signature_ok(key, body, bundle.get("signature", "")):
         return {"valid": False, "reason": "Chữ ký của máy chủ trên biên nhận không hợp lệ."}
     return {"valid": True, "reason": "Biên nhận hợp lệ, do máy chủ SecureSign ký.", "receipt": bundle["receipt"],
             "server_key_fingerprint": key_fingerprint(key)}

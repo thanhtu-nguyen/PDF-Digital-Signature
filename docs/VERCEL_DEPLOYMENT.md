@@ -97,6 +97,9 @@ Open Project → Settings → Environment Variables. Add the following variables
 | `RESEND_API_KEY` | Your Resend API key (or configure SMTP instead) |
 | `UPSTASH_REDIS_REST_URL` | Upstash REST URL |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash REST token |
+| `SECURESIGN_RECEIPT_KEY_PEM` | EC P-256 private key (PEM, `\n` escapes allowed) that signs evidence receipts. Optional; if empty, the key is generated once and kept in PostgreSQL |
+
+`TRUST_PROXY_HEADERS` is enabled automatically on Vercel (Vercel overwrites `X-Forwarded-For`). Demo accounts and their public passwords are always disabled when `APP_ENV=production`.
 
 `BLOB_STORE_ID` should be added automatically by the connected Blob store. Do not paste any secret into source code or commit it to Git.
 

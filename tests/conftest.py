@@ -15,7 +15,6 @@ for key, value in {
     "COOKIE_SECURE": "false",
     "APP_ENV": "development",
     "REQUIRE_EMAIL_VERIFICATION": "false",
-    "SECURESIGN_LAB_ENABLED": "true",
     "TRUST_PROXY_HEADERS": "false",
     "SECURESIGN_DEMO_ACCOUNTS": "false",   # tests create their own users; demo seeding is tested directly
 }.items():

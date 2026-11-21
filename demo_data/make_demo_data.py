@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 from backend.app.demo_seed import DEMO_KEY_PASSWORD, DEMO_USERS  # noqa: E402
-from backend.lab.pdf_tools import make_pdf  # noqa: E402
+from pdf_tools import make_pdf  # noqa: E402  (demo_data/pdf_tools.py)
 
 ITERATIONS = 310_000
 b64 = lambda data: base64.b64encode(data).decode()

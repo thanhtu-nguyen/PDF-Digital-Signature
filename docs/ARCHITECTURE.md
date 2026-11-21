@@ -38,6 +38,8 @@ erDiagram
     USERS ||--o{ DOCUMENTS : sends
     USERS ||--o{ DOCUMENTS : receives
     PUBLIC_KEYS ||--o{ DOCUMENTS : signs
+    USERS ||--o{ EVIDENCE_ENTRIES : acts_in
+    DOCUMENTS ||--o{ EVIDENCE_ENTRIES : recorded_by
     USERS ||--o{ AUDIT_LOGS : performs
 
     USERS {
@@ -127,12 +129,12 @@ sequenceDiagram
 
 ## 5. Luồng tạo và đăng ký khóa
 
-1. Trình duyệt tạo cặp RSA-PSS 2048-bit, exponent 65537.
+1. Trình duyệt tạo cặp RSA-PSS 2048-bit (exponent 65537) hoặc ECDSA P-256, theo lựa chọn của người dùng.
 2. Private Key PKCS#8 được mã hóa bằng PBKDF2-HMAC-SHA-256 + AES-256-GCM.
 3. Người dùng tải file Private Key đã mã hóa về thiết bị; Backend không nhận Private Key.
 4. Trình duyệt yêu cầu challenge ngẫu nhiên từ Backend.
 5. Trình duyệt ký challenge bằng Private Key; Backend xác minh proof-of-possession bằng Public Key.
-6. Backend lưu Public Key và fingerprint, gắn `owner_id` với tài khoản hiện tại.
+6. Backend lưu Public Key và fingerprint, gắn `owner_id` với tài khoản hiện tại, và ghi biên nhận `KEY_REGISTERED` vào sổ bằng chứng.
 
 ## 6. Luồng ký PDF và xác thực
 
@@ -141,15 +143,16 @@ flowchart TD
     A[Chọn PDF + encrypted Private Key] --> B[Nhập mật khẩu]
     B --> C[PBKDF2 tạo AES key]
     C --> D[AES-GCM giải mã PKCS8 trong browser]
-    D --> E[Web Crypto RSA-PSS ký PDF bytes]
+    D --> E[Web Crypto RSA-PSS hoặc ECDSA ký PDF bytes]
     E --> F[Local verify bằng Public Key]
     F --> G[POST PDF + signature + key_id]
     G --> H[Backend xác minh chữ ký]
-    H --> I[Audit event SIGN]
+    H --> I[Audit event SIGN + biên nhận PDF_SIGNED]
     E --> J[Download detached .sig]
 ```
 
-- RSA-PSS dùng SHA-256, MGF1-SHA-256 và salt 32 bytes.
+- RSA-PSS dùng SHA-256, MGF1-SHA-256 và salt 32 bytes; ECDSA dùng P-256 + SHA-256, chữ ký raw r||s được đổi sang DER trước khi gửi (OpenSSL đọc được).
+- Thuật toán được xác định bởi Public Key đã đăng ký, không do client chọn.
 - Máy chủ xác minh chữ ký và lưu lịch sử; không nhận Private Key.
 - File `.sig` là chữ ký detached; PDF gốc không bị sửa hoặc nhúng chữ ký.
 
@@ -175,10 +178,9 @@ flowchart TD
 - Cần bổ sung quét mã độc, quota, backup/restore, MFA, monitoring, Redis rate limiting và kiểm thử xâm nhập trước khi public production.
 - Không có CA chain, OCSP/CRL, TSA, PAdES hoặc xác minh danh tính pháp lý. `VALID` chỉ nói chữ ký mật mã khớp với dữ liệu và Public Key đã chọn.
 
-## 9. Security Lab (bổ sung cho đồ án cuối kỳ)
+## 9. Sổ bằng chứng chống chối bỏ (`backend/app/evidence.py`)
 
-- `backend/app/lab.py`: router `/api/lab/*`, yêu cầu đăng nhập + CSRF như mọi API khác; trạng thái lab lưu trong bộ nhớ, tách riêng theo từng user.
-- `backend/lab/ecc_core.py`, `backend/lab/attack.py`: ECDSA P-256 mang tính giáo dục (cho phép chọn nonce k để tái hiện lỗi) và thuật toán khôi phục khóa khi k bị dùng lại.
-- `backend/lab/pdf_tools.py`: tạo PDF tối giản, tất định, để lab ký trên byte PDF thật.
-- Cảnh 1–5: dùng đúng cách; tấn công dùng lại nonce; vá bằng RFC 6979; textbook RSA vs RSA-PSS; đánh tráo khóa công khai vs proof-of-possession (`crypto_service.verify_proof_of_possession`, cũng được `POST /api/keys` sử dụng).
-- Trang `/lab` có CSP riêng: script vẫn chỉ `'self'`, chỉ cho phép inline *style* để tô màu fingerprint.
+- Mỗi sự kiện `KEY_REGISTERED`, `KEY_REVOKED`, `PDF_SIGNED`, `DOCUMENT_SENT`, `DOCUMENT_VERIFIED` tạo một mục trong bảng `evidence_entries`: nội dung JSON chuẩn hóa (seq, thời gian máy chủ, người thực hiện, SHA-256 của PDF/chữ ký, fingerprint khóa, `prev_hash`), `entry_hash = SHA-256(nội dung)` và chữ ký ECDSA P-256 của máy chủ.
+- Khóa ký biên nhận lấy từ `SECURESIGN_RECEIPT_KEY_PEM`, nếu không có thì được tạo một lần và lưu trong bảng `server_keys`.
+- Thêm mục được tuần tự hóa bằng khóa trong tiến trình và `pg_advisory_xact_lock` trên PostgreSQL.
+- `GET /api/receipts/{seq}` trả biên nhận cho người thực hiện, bên gửi/nhận tài liệu và admin; `POST /api/receipts/verify` kiểm tra chữ ký máy chủ và vị trí trong chuỗi; `GET /api/admin/evidence` kiểm tra toàn bộ chuỗi; `demos/verify_receipt.py` kiểm tra ngoại tuyến.

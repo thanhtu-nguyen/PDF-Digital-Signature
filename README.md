@@ -4,31 +4,26 @@
 **Instructor:** Ph.D. Huynh Ngoc Tu
 **Group:** N05_G05: Trieu Ngoc Van Anh (524H0005), Duong Tran Quoc Khanh (523H0040), Nguyen Vo Thanh Tu (523H0189)
 
-This project puts the midterm theory report into practice in two parts:
+This project puts the midterm theory report into practice with **SecureSign Cloud**, a multi-user web platform that
+signs and verifies PDF documents with **RSA-PSS or ECDSA P-256** (SHA-256) and guarantees **non-repudiation** with
+server-signed, timestamped receipts kept in a **hash-chained evidence log**.
 
-1. **SecureSign Cloud**, a multi-user web platform that signs and verifies PDF documents correctly with
-   **RSA-PSS or ECDSA P-256** (SHA-256), and issues **server-signed, timestamped receipts** kept in a
-   **hash-chained evidence log** for non-repudiation. It is the "correct use" of digital signatures, built like a real service.
-2. **SecureSign Security Lab** (`/lab`), built into the same app, which shows step by step how badly
-   implemented signatures are broken and how SecureSign prevents each attack.
+| Security property | How SecureSign provides it | Attack it stops |
+|-------------------|----------------------------|-----------------|
+| Integrity | Detached signature over the exact PDF bytes (SHA-256), re-verified by the server | Changing one character of a signed PDF (1,000 → 9,000 USD) |
+| Authentication | Public keys bound to accounts only after a proof-of-possession challenge; trust marks after comparing fingerprints | Impersonation and key substitution (registering someone else's public key) |
+| Non-repudiation | Server-signed receipt (ECDSA P-256) for every key event, signature, delivery and verification, chained with SHA-256 | Denying a signature, back-dating it with a fake receipt, editing or rewriting the log |
+| Key confidentiality | Private key generated and encrypted in the browser (PBKDF2 310,000 + AES-256-GCM), never uploaded | Server or database compromise revealing private keys |
+| Account security | Argon2id, hashed session tokens, CSRF tokens, rate limiting, strict Content Security Policy | Password guessing (including the X-Forwarded-For bypass we fixed), CSRF, script injection |
 
-| # | Part | What it shows |
-|---|------|---------------|
-| – | SecureSign web app | Create an RSA-2048 or ECDSA P-256 key in the browser (private key encrypted with PBKDF2 + AES-256-GCM, never uploaded), prove possession of the key, sign a PDF, send it to another user, verify it, detect a tampered copy, download and check a server-signed receipt; the admin checks the integrity of the whole evidence chain. |
-| 1 | Lab scene 1: How it works | RSA-PSS and ECDSA P-256 sign a contract PDF. A one-character change (1,000 → 9,000 USD) and an impostor's key are both rejected. |
-| 2 | Lab scene 2: **The attack** | An invoice-signing service reuses the ECDSA nonce `k`. From two public signed PDFs the attacker recovers the private key and forges a 1,000,000 USD invoice that the audited `cryptography` library **and OpenSSL** accept. |
-| 3 | Lab scene 3: **The fix** | RFC 6979 deterministic nonces. The same attack code fails, and the output is byte-identical to `cryptography` (`deterministic_signing=True`). |
-| 4 | Lab scene 4: RSA padding | Textbook RSA multiplicative forgery, blocked by RSA-PSS. |
-| 5 | Lab scene 5: Key registry | Key substitution: Eve registers Alice's *public* key as her own. A registry without proof-of-possession accepts it; SecureSign's challenge-response rejects it. |
-| 6 | Lab scene 6: **Non-repudiation** | Alice denies having signed (with a fake, later-dated receipt) and an insider edits the log, then even recomputes every hash. The server-signed receipt and the hash chain expose all three. |
-| – | `demos/` | Console versions of scenes 1–4, an OpenSSL CLI demo and `verify_receipt.py` (offline receipt check). |
-| – | `tests/` | 37 automated tests: crypto (RSA and ECDSA), multi-user isolation, receipts and the evidence chain, the lab attacks and patches, the RFC 6979 test vector, the security fixes and the demo accounts. |
+The attack flows and defenses are explained with diagrams in the report (Chapters 3–5). `tests/` contains 21
+automated tests for the signatures, receipts, evidence chain, access control and security fixes.
 
 ## Requirements
 * Python 3.11+ (tested on Python 3.11.9, macOS and Windows 10). On macOS/Linux use `python3` instead of `python`
 * A modern browser (Chrome, Edge, Firefox, Safari). Web Crypto needs `http://127.0.0.1` / `localhost` or HTTPS
 * Packages in `requirements.txt` (FastAPI, SQLAlchemy, `cryptography >= 44`, argon2-cffi, ...)
-* Optional: OpenSSL / LibreSSL CLI to re-check the forged PDF and to run `demos/openssl_demo.sh`
+* Optional: OpenSSL / LibreSSL CLI to check `.sig` files independently
 
 No VM, internet access or external service is needed for the demonstration. Locally the app uses SQLite in
 `storage/`, does not require email verification and creates demo accounts (see below).
@@ -105,65 +100,35 @@ For a real deployment use your own administrator account instead (never commit i
 ADMIN_EMAIL=admin@your-domain.com ADMIN_PASSWORD='a-long-unique-password' python -m uvicorn backend.app.main:app --port 8000
 ```
 
-### Security Lab
-While signed in (any demo account works), click **Security Lab** in the sidebar or open `http://127.0.0.1:8000/lab`.
-
-| Scene | Steps (one click each) |
-|-------|-------|
-| 1 · How it works | keys → sign contract PDF → Bob verifies (valid) → Eve changes 1,000 to 9,000 USD (rejected) → Eve signs with her own key (rejected) |
-| 2 · The attack | service starts (k reused) → signs invoice PDF #1001 → #1002 (same r) → Eve recovers the private key → forged 1,000,000 USD invoice accepted |
-| 3 · The fix | the same steps with RFC 6979: r differs → wrong key → forgery rejected → byte-identical to the `cryptography` library |
-| 4 · RSA padding | sign(100) × sign(50) = valid signature on 5,000 with textbook RSA; RSA-PSS rejects it |
-| 5 · Key registry | Alice registers her key with proof-of-possession → Eve claims Alice's key in a naive registry (attack works) → the same against SecureSign (rejected) |
-| 6 · Non-repudiation | Alice signs and sends (3 chained receipts) → Alice denies with a fake receipt (rejected) → an insider edits entry #2 (detected) → the insider recomputes all hashes (still detected: no server signature) |
-
-Controls: **→ / Space / Enter** next step, **R** restart the scene, **M** show or hide the math, **EN / VI**
-switches the language. Values are shown as coloured fingerprints, so equal values have equal colours. Deep links:
-`#correct`, `#attack`, `#defense`, `#rsa`, `#keysub`, `#evidence`; `#attack/5` opens a scene and runs its first 5 steps.
-
-After scene 2 the forged invoice can be downloaded and checked with an independent verifier:
+### Console tools and tests
 ```bash
-openssl dgst -sha256 -verify lab-public.pem -signature lab-forged.sig lab-forged.pdf    # Verified OK
+python -m pytest -v                               # 21 automated checks
+python demos/verify_receipt.py RECEIPT.json --server-key server.pem --pdf FILE.pdf   # offline receipt check
+python demo_data/make_demo_data.py                # regenerate demo keys and sample PDFs
 ```
-
-The lab is enabled by default for local development and disabled when `APP_ENV=production`
-(set `SECURESIGN_LAB_ENABLED=true` to force it on).
-
-### Console and tests
+An ECDSA `.sig` file is DER-encoded, so it can also be checked with OpenSSL using the signer's public key
+(downloaded from **Danh bạ Public Key**):
 ```bash
-python -m pytest -v                               # 37 automated checks
-python demos/run_all.py --pause                   # console version of lab scenes 1–4
-python demos/demo2_nonce_reuse_attack.py
-bash demos/openssl_demo.sh
+openssl dgst -sha256 -verify bob-public.pem -signature contract.sig contract.pdf
 ```
-Generated keys, signatures and intercepted/forged data from the console demos are written to `demos/output/`.
 
 ## File layout
 ```
-backend/app/main.py            FastAPI app: auth, keys, signing, documents, admin, security middleware
+backend/app/main.py            FastAPI app: auth, keys, signing, documents, receipts, admin, security middleware
 backend/app/crypto_service.py  verify_signature() for RSA-PSS and ECDSA P-256, verify_proof_of_possession(), key policy
 backend/app/evidence.py        signed receipts, hash-chained evidence log, chain/receipt verification
 backend/app/security.py        Argon2id passwords, session tokens, CSRF, roles
 backend/app/database.py        SQLAlchemy models (users, sessions, keys, documents, audit log, evidence entries)
-backend/app/lab.py             Security Lab API (6 scenes, state per user)
-backend/app/storage_service.py local disk or private Vercel Blob storage
-backend/lab/ecc_core.py        P-256 arithmetic, ECDSA with explicit nonce, RFC 6979 (educational)
-backend/lab/attack.py          nonce-reuse detection and private-key recovery
-backend/lab/pdf_tools.py       small deterministic PDF builder for the lab
-frontend/                      SecureSign web app (Web Crypto signing in the browser)
-frontend/lab/                  Security Lab page (story mode, EN/VI)
 backend/app/demo_seed.py       demo accounts created at start-up (development only)
-demo_data/                     demo key files, sample PDFs and make_demo_data.py
-demos/                         console demos 1-4, run_all.py, openssl_demo.sh, verify_receipt.py
+backend/app/storage_service.py local disk or private Vercel Blob storage
+frontend/                      SecureSign web app (Web Crypto key generation and signing in the browser)
+demo_data/                     demo key files, sample PDFs, make_demo_data.py and pdf_tools.py
+demos/verify_receipt.py        offline receipt verifier (no need to trust the server)
 tests/                         pytest suite
 docs/                          architecture, Vietnamese user guide, Docker/Vercel deployment
 Dockerfile, docker-compose.yml, Caddyfile, vercel.json   deployment (HTTPS, PostgreSQL)
 ```
 
-> `backend/lab/ecc_core.py` is intentionally minimal and **not constant-time**. It exists only because audited
-> libraries do not let the caller choose `k`, which we need in order to reproduce the bug. SecureSign itself never
-> uses it: all production signing uses Web Crypto in the browser and the `cryptography` library on the server.
->
 > SecureSign is a course project, not a licensed signature service: it uses detached RSA-PSS / ECDSA signatures
-> (ECDSA `.sig` files are DER-encoded, so OpenSSL can verify them) and its own receipt service, not CA-issued
-> certificates, an RFC 3161 time-stamping authority or PAdES. See `docs/SECURESIGN_GUIDE_vi.md` for deployment and the full API list.
+> and its own receipt service, not CA-issued certificates, an RFC 3161 time-stamping authority or PAdES.
+> See `docs/SECURESIGN_GUIDE_vi.md` for deployment and the full API list.

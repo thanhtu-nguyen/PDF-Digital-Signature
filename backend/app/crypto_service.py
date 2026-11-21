@@ -101,7 +101,8 @@ def verify_signature(pdf_bytes: bytes, signature: bytes, public_key_pem: bytes):
         }
 
 
-def verify_proof_of_possession(public_key, challenge: str, proof_b64: str) -> bool:
+def verify_proof_of_possession(public_key, challenge: str,
+                               proof_b64: str) -> bool:
     """Return True only if `proof_b64` is a signature (RSA-PSS or ECDSA, depending on
     the key) on the one-time server challenge made with the matching private key.
 
@@ -111,7 +112,9 @@ def verify_proof_of_possession(public_key, challenge: str, proof_b64: str) -> bo
     """
     try:
         proof = base64.b64decode(proof_b64, validate=True)
-        verify_detached_signature(challenge.encode("utf-8"), proof, public_key)
+        # RSA-PSS or ECDSA, chosen by the type of the registered key
+        verify_detached_signature(challenge.encode(), proof,
+                                  public_key)
         return True
     except (ValueError, InvalidSignature):
         return False

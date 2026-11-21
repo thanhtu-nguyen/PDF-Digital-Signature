@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .config import (
     ALLOWED_ORIGINS, APP_ENV, COOKIE_SECURE, CSRF_COOKIE_NAME,
-    FRONTEND_DIR, LAB_ENABLED, MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, REQUIRE_EMAIL_VERIFICATION,
+    FRONTEND_DIR, MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, REQUIRE_EMAIL_VERIFICATION,
     RESEND_API_KEY, SMTP_FROM, SMTP_HOST, TRUST_PROXY_HEADERS,
     UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
 )
@@ -153,10 +153,6 @@ async def security_middleware(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
-    if request.url.path == "/lab" or request.url.path.startswith("/static/lab/"):
-        # The Security Lab colours value fingerprints with inline style attributes.
-        # Scripts stay restricted to 'self'; only inline *styles* are allowed here.
-        csp = csp.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")
     if request.url.path == "/api/docs" and APP_ENV != "production":
         csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     response.headers["Content-Security-Policy"] = csp
@@ -171,16 +167,6 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 @app.get("/", include_in_schema=False)
 async def home():
     return FileResponse(FRONTEND_DIR / "index.html")
-
-
-if LAB_ENABLED:
-    from .lab import router as lab_router
-
-    app.include_router(lab_router)
-
-    @app.get("/lab", include_in_schema=False)
-    async def security_lab_page():
-        return FileResponse(FRONTEND_DIR / "lab" / "index.html")
 
 
 def _iso(value):
@@ -301,7 +287,6 @@ def health_check(db: Session = Depends(get_db)):
         "database": "ok",
         "storage": storage_status(),
         "rate_limit": "upstash" if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN else "local-dev-only",
-        "security_lab": LAB_ENABLED,
         "service": "SecureSign Cloud",
         "version": "2.2.0",
     }

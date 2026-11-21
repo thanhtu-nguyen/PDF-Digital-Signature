@@ -1,13 +1,12 @@
 """
-pdf_tools.py - build small, valid, deterministic PDF documents for the Security Lab.
+pdf_tools.py - build small, valid, deterministic PDF documents for the demo data and tests.
 
-The lab signs real PDF bytes (the same kind of file SecureSign users sign), not
-plain strings. The output is deterministic: the same text always gives the same
-bytes, so a SHA-256 fingerprint shown in the GUI can be reproduced offline.
+The output is deterministic: the same text always gives the same bytes, so the
+SHA-256 of the sample contracts can be reproduced offline.
 Only the standard library is used.
 """
 
-TITLE = "SecureSign Security Lab"
+TITLE = "SecureSign Contract"
 
 
 def _escape(text: str) -> str:
