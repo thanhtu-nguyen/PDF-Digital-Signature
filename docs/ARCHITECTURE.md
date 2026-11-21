@@ -174,3 +174,11 @@ flowchart TD
 - Local mode lưu file trong storage/; Vercel mode dùng private Vercel Blob, kiểm tra quyền sender/recipient trước khi đọc. PDF giới hạn 4 MiB trên Vercel do giới hạn request body 4.5 MB.
 - Cần bổ sung quét mã độc, quota, backup/restore, MFA, monitoring, Redis rate limiting và kiểm thử xâm nhập trước khi public production.
 - Không có CA chain, OCSP/CRL, TSA, PAdES hoặc xác minh danh tính pháp lý. `VALID` chỉ nói chữ ký mật mã khớp với dữ liệu và Public Key đã chọn.
+
+## 9. Security Lab (bổ sung cho đồ án cuối kỳ)
+
+- `backend/app/lab.py`: router `/api/lab/*`, yêu cầu đăng nhập + CSRF như mọi API khác; trạng thái lab lưu trong bộ nhớ, tách riêng theo từng user.
+- `backend/lab/ecc_core.py`, `backend/lab/attack.py`: ECDSA P-256 mang tính giáo dục (cho phép chọn nonce k để tái hiện lỗi) và thuật toán khôi phục khóa khi k bị dùng lại.
+- `backend/lab/pdf_tools.py`: tạo PDF tối giản, tất định, để lab ký trên byte PDF thật.
+- Cảnh 1–5: dùng đúng cách; tấn công dùng lại nonce; vá bằng RFC 6979; textbook RSA vs RSA-PSS; đánh tráo khóa công khai vs proof-of-possession (`crypto_service.verify_proof_of_possession`, cũng được `POST /api/keys` sử dụng).
+- Trang `/lab` có CSP riêng: script vẫn chỉ `'self'`, chỉ cho phép inline *style* để tô màu fingerprint.

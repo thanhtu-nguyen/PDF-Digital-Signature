@@ -24,6 +24,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-securesign}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securesign}
       SECURESIGN_STORAGE_DIR: /app/storage
       COOKIE_SECURE: "true"
+      TRUST_PROXY_HEADERS: "true"   # Caddy overwrites X-Forwarded-For
+      SECURESIGN_LAB_ENABLED: ${SECURESIGN_LAB_ENABLED:-false}
       COOKIE_SAMESITE: lax
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       PUBLIC_BASE_URL: https://${DOMAIN:?Set DOMAIN in .env}

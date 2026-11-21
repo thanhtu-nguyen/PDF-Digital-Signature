@@ -8,6 +8,113 @@ const MAX_PDF = 4 * 1024 * 1024;
 const PSS_SALT_LENGTH = 32;
 const PBKDF2_ITERATIONS = 310000;
 
+// --------------------------- Signature algorithms (RSA and ECC) ---------------------------
+const ALGORITHMS = {
+  "RSA-PSS": {
+    label: "RSA-PSS 2048 · SHA-256",
+    generate: {name:"RSA-PSS", modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:"SHA-256"},
+    importParams: {name:"RSA-PSS", hash:"SHA-256"},
+    signParams: {name:"RSA-PSS", saltLength:PSS_SALT_LENGTH},
+  },
+  "ECDSA-P256": {
+    label: "ECDSA P-256 · SHA-256",
+    generate: {name:"ECDSA", namedCurve:"P-256"},
+    importParams: {name:"ECDSA", namedCurve:"P-256"},
+    signParams: {name:"ECDSA", hash:"SHA-256"},
+  },
+};
+const algorithmLabel = (alg) => (ALGORITHMS[alg] || ALGORITHMS["RSA-PSS"]).label;
+
+// Web Crypto returns ECDSA signatures as raw r||s (64 bytes). The server and OpenSSL use DER:
+// SEQUENCE { INTEGER r, INTEGER s }.
+function ecdsaRawToDer(raw) {
+  const integer = (bytes) => {
+    let i = 0; while (i < bytes.length - 1 && bytes[i] === 0) i++;
+    let v = bytes.slice(i); if (v[0] & 0x80) v = Uint8Array.of(0, ...v);
+    return Uint8Array.of(0x02, v.length, ...v);
+  };
+  const half = raw.length / 2;
+  const body = Uint8Array.of(...integer(raw.slice(0, half)), ...integer(raw.slice(half)));
+  return Uint8Array.of(0x30, body.length, ...body);
+}
+
+// Sign, then check the signature with the matching public key before it leaves the browser.
+async function signAndCheck(alg, privateKey, publicKey, data) {
+  const params = ALGORITHMS[alg];
+  const raw = new Uint8Array(await crypto.subtle.sign(params.signParams, privateKey, data));
+  if (!(await crypto.subtle.verify(params.signParams, publicKey, raw, data))) throw new Error("Private Key và Public Key trong tệp khóa không khớp nhau.");
+  return alg === "ECDSA-P256" ? ecdsaRawToDer(raw) : raw;
+}
+
+// Decrypt a .key.json bundle locally: PBKDF2-SHA256 -> AES-256-GCM -> PKCS#8 private key.
+async function unlockKeyBundle(file, password) {
+  if (!file) throw new Error("Vui lòng chọn tệp Private Key đã mã hóa (.key.json).");
+  if (!password) throw new Error("Vui lòng nhập mật khẩu Private Key.");
+  if (!window.isSecureContext || !crypto.subtle) throw new Error("Web Crypto API cần HTTPS hoặc localhost để hoạt động.");
+  let bundle;
+  try { bundle = JSON.parse(await file.text()); } catch { throw new Error("Tệp khóa không phải JSON hợp lệ."); }
+  const alg = bundle.algorithm;
+  if (bundle.version !== 1 || !ALGORITHMS[alg] || bundle.kdf !== "PBKDF2-SHA256" || bundle.cipher !== "AES-256-GCM") throw new Error("Định dạng tệp khóa không được hỗ trợ.");
+  if (!Number.isInteger(bundle.iterations) || bundle.iterations < 100000 || bundle.iterations > 1000000) throw new Error("Thông số KDF trong tệp khóa không hợp lệ.");
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  const aesKey = await crypto.subtle.deriveKey({name:"PBKDF2", salt:base64ToBytes(bundle.salt), iterations:bundle.iterations, hash:"SHA-256"}, material, {name:"AES-GCM", length:256}, false, ["decrypt"]);
+  let pkcs8;
+  try { pkcs8 = await crypto.subtle.decrypt({name:"AES-GCM", iv:base64ToBytes(bundle.iv)}, aesKey, base64ToBytes(bundle.ciphertext)); }
+  catch { throw new Error("Sai mật khẩu Private Key hoặc tệp khóa đã bị sửa (AES-GCM từ chối giải mã)."); }
+  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, ALGORITHMS[alg].importParams, false, ["sign"]);
+  const publicKey = await crypto.subtle.importKey("spki", pemDecode(bundle.publicKeyPem), ALGORITHMS[alg].importParams, true, ["verify"]);
+  return {bundle, alg, privateKey, publicKey};
+}
+
+// --------------------------- File pickers: chip with name/size, remove button, drag & drop ---------------------------
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+function clearFile(input) {
+  input.value = "";
+  input.dispatchEvent(new Event("change", {bubbles:true}));
+}
+function enhanceFileInput(input) {
+  const dropzone = input.closest(".dropzone");
+  const anchor = dropzone || input;
+  const chip = document.createElement("div");
+  chip.className = "file-chip hidden";
+  const icon = document.createElement("span"); icon.className = "file-chip-icon";
+  const meta = document.createElement("div"); meta.className = "file-chip-meta";
+  const name = document.createElement("strong"); const size = document.createElement("small");
+  meta.append(name, size);
+  const remove = document.createElement("button");
+  remove.type = "button"; remove.className = "file-chip-remove"; remove.textContent = "✕ Gỡ";
+  remove.setAttribute("aria-label", "Gỡ tệp đã chọn");
+  remove.addEventListener("click", (event) => { event.preventDefault(); clearFile(input); });
+  chip.append(icon, meta, remove);
+  anchor.insertAdjacentElement("afterend", chip);
+  const update = () => {
+    const file = input.files[0];
+    chip.classList.toggle("hidden", !file);
+    input.classList.toggle("has-file", !!file);
+    if (dropzone) dropzone.classList.toggle("hidden", !!file);
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    const lower = file.name.toLowerCase();
+    icon.textContent = ext === "pdf" ? "PDF" : ext === "sig" ? "SIG" : ext === "pem" ? "PEM" : (lower.endsWith(".key.json") || ext === "key") ? "KEY" : "JSON";
+    icon.dataset.kind = icon.textContent.toLowerCase();
+    name.textContent = file.name; size.textContent = formatSize(file.size);
+  };
+  input.addEventListener("change", update);
+  const target = dropzone || input;
+  ["dragenter","dragover"].forEach(type => target.addEventListener(type, (e) => { e.preventDefault(); target.classList.add("dragging"); }));
+  ["dragleave","drop"].forEach(type => target.addEventListener(type, () => target.classList.remove("dragging")));
+  target.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer?.files?.length) { input.files = e.dataTransfer.files; input.dispatchEvent(new Event("change", {bubbles:true})); }
+  });
+  update();
+}
+document.querySelectorAll('input[type="file"]').forEach(enhanceFileInput);
+
 function showNotice(message, type = "info") {
   const el = $("notice");
   if (!el) return;
@@ -139,14 +246,15 @@ function showPage(page) {
   if (page === "inbox") loadDocuments(state.documentsMode);
   if (page === "history") refreshHistory();
   if (page === "dashboard") refreshDashboard();
-  if (page === "admin") loadAdmin();
+  if (page === "admin") { loadAdmin(); loadEvidence(); }
 }
 document.querySelectorAll("[data-page]").forEach(b => b.addEventListener("click", () => showPage(b.dataset.page)));
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => showPage(b.dataset.go)));
 
 async function checkHealth() {
   try {
-    await api("/api/health");
+    const health = await api("/api/health");
+    $("lab-nav").classList.toggle("hidden", !health.security_lab);
     $("server-status").textContent = "Máy chủ hoạt động";
     $("server-status").parentElement.classList.add("online");
   } catch {
@@ -248,8 +356,9 @@ $("generate-keys").addEventListener("click", async () => {
     if (password.length < 12) throw new Error("Mật khẩu phải có ít nhất 12 ký tự.");
     if (password !== confirm) throw new Error("Hai mật khẩu không trùng khớp.");
     if (!window.isSecureContext || !crypto.subtle) throw new Error("Web Crypto API cần HTTPS hoặc localhost để hoạt động.");
+    const alg = $("key-algorithm").value;
     button.disabled = true; button.textContent = "Đang tạo cặp khóa...";
-    const pair = await crypto.subtle.generateKey({name:"RSA-PSS",modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:"SHA-256"},true,["sign","verify"]);
+    const pair = await crypto.subtle.generateKey(ALGORITHMS[alg].generate, true, ["sign","verify"]);
     const spki = await crypto.subtle.exportKey("spki", pair.publicKey);
     const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
     const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -260,27 +369,30 @@ $("generate-keys").addEventListener("click", async () => {
     const publicKeyPem = pemEncode("PUBLIC KEY", spki);
     const fingerprint = await sha256(spki);
     const toB64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)));
-    const bundle = {version:1,algorithm:"RSA-PSS",hash:"SHA-256",modulusLength:2048,cipher:"AES-256-GCM",kdf:"PBKDF2-SHA256",iterations:PBKDF2_ITERATIONS,salt:toB64(salt),iv:toB64(iv),ciphertext:toB64(encrypted),publicKeyPem,fingerprint,owner:name,createdAt:new Date().toISOString()};
-    state.generated = {bundle,publicKeyPem,fingerprint,owner:name,privateKey:pair.privateKey};
+    const shape = alg === "ECDSA-P256" ? {curve:"P-256"} : {modulusLength:2048};
+    const bundle = {version:1,algorithm:alg,hash:"SHA-256",...shape,cipher:"AES-256-GCM",kdf:"PBKDF2-SHA256",iterations:PBKDF2_ITERATIONS,salt:toB64(salt),iv:toB64(iv),ciphertext:toB64(encrypted),publicKeyPem,fingerprint,owner:name,createdAt:new Date().toISOString()};
+    state.generated = {bundle,alg,publicKeyPem,fingerprint,owner:name,privateKey:pair.privateKey,publicKey:pair.publicKey};
     $("generated-key-result").classList.remove("hidden");
-    showNotice(`Đã tạo cặp khóa RSA 2048-bit. Fingerprint: ${fingerprint}`, "success");
+    showNotice(`Đã tạo cặp khóa ${algorithmLabel(alg)}. Fingerprint: ${fingerprint}`, "success");
   } catch (err) { showNotice(err.message || "Không thể tạo cặp khóa.", "error"); }
-  finally { button.disabled = false; button.innerHTML = 'Tạo cặp khóa RSA <span>→</span>'; }
+  finally { button.disabled = false; button.innerHTML = 'Tạo cặp khóa <span>→</span>'; }
 });
-$("download-private").addEventListener("click", () => { if (state.generated) downloadText(JSON.stringify(state.generated.bundle,null,2),"private-key-encrypted.key.json","application/json"); });
+$("download-private").addEventListener("click", () => { if (state.generated) downloadText(JSON.stringify(state.generated.bundle,null,2),`private-key-${state.generated.alg.toLowerCase()}-encrypted.key.json`,"application/json"); });
 $("download-public").addEventListener("click", () => { if (state.generated) downloadText(state.generated.publicKeyPem,"public-key.pem","application/x-pem-file"); });
-async function registerPublicKeyWithProof(name, publicKeyPem, privateKey) {
+async function registerPublicKeyWithProof(name, publicKeyPem, alg, privateKey, publicKey) {
+  // Proof-of-possession: sign the server's one-time challenge with the private key.
   const challenge = await api("/api/keys/challenge", {method:"POST"});
   const challengeBytes = new TextEncoder().encode(challenge.challenge);
-  const proof = await crypto.subtle.sign({name:"RSA-PSS",saltLength:PSS_SALT_LENGTH},privateKey,challengeBytes);
-  const proofBase64 = btoa(String.fromCharCode(...new Uint8Array(proof)));
+  const proof = await signAndCheck(alg, privateKey, publicKey, challengeBytes);
+  const proofBase64 = btoa(String.fromCharCode(...proof));
   return api("/api/keys", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,public_key_pem:publicKeyPem,challenge_id:challenge.challenge_id,proof_signature:proofBase64})});
 }
 
 $("register-generated").addEventListener("click", async () => {
   if (!state.generated) return;
   try {
-    const data = await registerPublicKeyWithProof(state.generated.owner,state.generated.publicKeyPem,state.generated.privateKey);
+    const g = state.generated;
+    const data = await registerPublicKeyWithProof(g.owner,g.publicKeyPem,g.alg,g.privateKey,g.publicKey);
     showNotice(`Đã chứng minh quyền sở hữu Private Key và đăng ký Public Key. Fingerprint: ${data.item.fingerprint}`,"success");
     await refreshKeys(); await refreshDirectory(); await refreshDashboard();
   } catch (err) { showNotice(err.message,"error"); }
@@ -288,29 +400,11 @@ $("register-generated").addEventListener("click", async () => {
 $("import-register-key").addEventListener("click", async () => {
   const button = $("import-register-key");
   try {
-    const file = $("import-key-file").files[0];
-    const password = $("import-key-password").value;
-    if (!file) throw new Error("Vui lòng chọn file Private Key đã mã hóa.");
-    if (!password) throw new Error("Vui lòng nhập mật khẩu Private Key.");
     button.disabled = true; button.textContent = "Đang giải mã khóa trong trình duyệt...";
-    const bundle = JSON.parse(await file.text());
-    if (bundle.version !== 1 || bundle.algorithm !== "RSA-PSS" || bundle.kdf !== "PBKDF2-SHA256" || bundle.cipher !== "AES-256-GCM") throw new Error("Định dạng file khóa không được hỗ trợ.");
-    if (!Number.isInteger(bundle.iterations) || bundle.iterations < 100000 || bundle.iterations > 1000000) throw new Error("Thông số KDF trong file khóa không hợp lệ.");
-    const material = await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveKey"]);
-    const aesKey = await crypto.subtle.deriveKey({name:"PBKDF2",salt:base64ToBytes(bundle.salt),iterations:bundle.iterations,hash:"SHA-256"},material,{name:"AES-GCM",length:256},false,["decrypt"]);
-    const pkcs8 = await crypto.subtle.decrypt({name:"AES-GCM",iv:base64ToBytes(bundle.iv)},aesKey,base64ToBytes(bundle.ciphertext));
-    const privateKey = await crypto.subtle.importKey("pkcs8",pkcs8,{name:"RSA-PSS",hash:"SHA-256"},false,["sign"]);
-    const publicKey = await crypto.subtle.importKey("spki",pemDecode(bundle.publicKeyPem),{name:"RSA-PSS",hash:"SHA-256"},true,["verify"]);
-    const challenge = await api("/api/keys/challenge",{method:"POST"});
-    const challengeBytes = new TextEncoder().encode(challenge.challenge);
-    const proof = await crypto.subtle.sign({name:"RSA-PSS",saltLength:PSS_SALT_LENGTH},privateKey,challengeBytes);
-    const pairMatches = await crypto.subtle.verify({name:"RSA-PSS",saltLength:PSS_SALT_LENGTH},publicKey,proof,challengeBytes);
-    if (!pairMatches) throw new Error("Private Key và Public Key trong file không khớp nhau.");
-    const proofBase64 = btoa(String.fromCharCode(...new Uint8Array(proof)));
-    const name = bundle.owner || state.user.full_name;
-    const data = await api("/api/keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,public_key_pem:bundle.publicKeyPem,challenge_id:challenge.challenge_id,proof_signature:proofBase64})});
+    const {bundle, alg, privateKey, publicKey} = await unlockKeyBundle($("import-key-file").files[0], $("import-key-password").value);
+    const data = await registerPublicKeyWithProof(bundle.owner || state.user.full_name, bundle.publicKeyPem, alg, privateKey, publicKey);
     showNotice(`Đã nhập và đăng ký khóa hiện có. Fingerprint: ${data.item.fingerprint}`,"success");
-    $("import-key-file").value = ""; $("import-key-password").value = "";
+    clearFile($("import-key-file")); $("import-key-password").value = "";
     await refreshKeys(); await refreshDirectory(); await refreshDashboard();
   } catch (err) { showNotice(err.message || "Không thể đăng ký khóa hiện có.","error"); }
   finally { button.disabled = false; button.textContent = "Giải mã cục bộ và đăng ký khóa hiện có"; }
@@ -330,8 +424,11 @@ async function refreshKeys() {
         const info = document.createElement("div"); info.className = "key-item-meta";
         const title = document.createElement("strong"); title.textContent = item.name;
         const fp = document.createElement("code"); fp.textContent = item.fingerprint;
+        const chips = document.createElement("div"); chips.className = "chip-row";
+        const algo = document.createElement("span"); algo.className = "algo-chip"; algo.textContent = algorithmLabel(item.algorithm);
         const status = document.createElement("span"); status.className = `status-chip ${item.status}`; status.textContent = item.status === "active" ? "Đang hoạt động" : "Đã thu hồi";
-        info.append(title,fp,status);
+        chips.append(algo,status);
+        info.append(title,fp,chips);
         row.append(info);
         if (item.status === "active") {
           const revoke = document.createElement("button"); revoke.textContent = "Thu hồi"; revoke.type = "button";
@@ -347,7 +444,7 @@ async function refreshKeys() {
     }
     const sendSelect = $("send-key-select");
     sendSelect.innerHTML = '<option value="">-- Chọn khóa của tôi --</option>';
-    data.items.filter(k=>k.status==="active").forEach(item=>{const opt=document.createElement("option");opt.value=item.id;opt.textContent=`${item.name} · ${item.fingerprint.slice(0,12)}…`;sendSelect.append(opt);});
+    data.items.filter(k=>k.status==="active").forEach(item=>{const opt=document.createElement("option");opt.value=item.id;opt.textContent=`${item.name} · ${algorithmLabel(item.algorithm)} · ${item.fingerprint.slice(0,12)}…`;sendSelect.append(opt);});
   } catch (err) { if (state.user) showNotice(`Không tải được khóa: ${err.message}`,"error"); }
 }
 
@@ -358,78 +455,74 @@ async function refreshDirectory() {
     state.directoryKeys = data.items;
     const select = $("verify-key-select");
     select.innerHTML = '<option value="">-- Chọn Public Key --</option>';
-    data.items.forEach(item=>{const opt=document.createElement("option");opt.value=item.id;opt.textContent=`${item.owner_name} · ${item.name}${item.trusted?" · Tin cậy":""}`;select.append(opt);});
+    data.items.forEach(item=>{const opt=document.createElement("option");opt.value=item.id;opt.textContent=`${item.owner_name} · ${item.name} · ${algorithmLabel(item.algorithm)}${item.trusted?" · Tin cậy":""}`;select.append(opt);});
     const body = $("directory-body"); body.innerHTML = "";
-    if (!data.items.length) { const tr=document.createElement("tr");const td=document.createElement("td");td.colSpan=5;td.className="empty-cell";td.textContent="Chưa có Public Key phù hợp.";tr.append(td);body.append(tr);return; }
+    if (!data.items.length) { const tr=document.createElement("tr");const td=document.createElement("td");td.colSpan=6;td.className="empty-cell";td.textContent="Chưa có Public Key phù hợp.";tr.append(td);body.append(tr);return; }
     data.items.forEach(item=>{
       const tr=document.createElement("tr");
       const owner=document.createElement("td");owner.textContent=item.owner_name;
       const name=document.createElement("td");name.textContent=item.name;
+      const algoTd=document.createElement("td");const algo=document.createElement("span");algo.className="algo-chip";algo.textContent=algorithmLabel(item.algorithm);algoTd.append(algo);
       const fp=document.createElement("td");const code=document.createElement("code");code.textContent=item.fingerprint.slice(0,20)+"…";fp.append(code);
       const trust=document.createElement("td");const chip=document.createElement("span");chip.className=`status-chip ${item.trusted?"active":"pending"}`;chip.textContent=item.trusted?"Đã tin cậy":"Chưa tin cậy";trust.append(chip);
-      const action=document.createElement("td");
+      const actionTd=document.createElement("td");const action=document.createElement("div");action.className="action-buttons";actionTd.append(action);
       const pemBtn=document.createElement("button");pemBtn.className="btn btn-outline small";pemBtn.textContent="Tải PEM";pemBtn.addEventListener("click",()=>downloadProtected(`/api/keys/${item.id}/pem`,`public-key-${item.fingerprint.slice(0,12)}.pem`).catch(e=>showNotice(e.message,"error")));action.append(pemBtn);
       if (!item.is_mine) {
         const btn=document.createElement("button");btn.className="btn btn-outline small";btn.textContent=item.trusted?"Bỏ tin cậy":"Đánh dấu tin cậy";
         btn.addEventListener("click",async()=>{try{await api(`/api/keys/${item.id}/trust`,{method:item.trusted?"DELETE":"POST"});await refreshDirectory();showNotice(item.trusted?"Đã bỏ đánh dấu tin cậy.":"Đã thêm khóa vào danh sách tin cậy.","success");}catch(err){showNotice(err.message,"error");}});action.append(btn);
       } else { const own=document.createElement("span");own.className="status-chip active";own.textContent="Khóa của bạn";action.append(own); }
-      tr.append(owner,name,fp,trust,action);body.append(tr);
+      tr.append(owner,name,algoTd,fp,trust,actionTd);body.append(tr);
     });
   } catch (err) { if (state.user) console.warn("Directory:",err.message); }
 }
 $("directory-search").addEventListener("change", refreshDirectory);
 
 // --------------------------- Signing ---------------------------
-$("sign-pdf").addEventListener("change", () => {
-  const file = $("sign-pdf").files[0];
-  if (!file) return;
-  $("sign-file-info").textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`;
-  $("sign-file-info").classList.remove("hidden");
-});
+function resetSignResult() {
+  state.signatureBlob = null; state.signReceiptSeq = null;
+  $("sign-result").classList.add("hidden"); $("sign-empty").classList.remove("hidden");
+  $("download-sign-receipt").classList.add("hidden");
+  $("sign-status").textContent = "Chưa ký"; $("sign-status").className = "pill neutral";
+}
+// A new PDF or key invalidates the previous signature shown on screen.
+["sign-pdf","sign-private-key"].forEach(id => $(id).addEventListener("change", resetSignResult));
 $("sign-button").addEventListener("click", async () => {
   const button = $("sign-button");
   try {
     const pdfFile = $("sign-pdf").files[0]; validatePdf(pdfFile);
-    const keyFile = $("sign-private-key").files[0];
-    const password = $("sign-password").value;
-    if (!keyFile) throw new Error("Vui lòng chọn tệp Private Key đã mã hóa.");
-    if (!password) throw new Error("Vui lòng nhập mật khẩu Private Key.");
-    if (!window.isSecureContext || !crypto.subtle) throw new Error("Ký số cần HTTPS hoặc localhost.");
     button.disabled = true; button.textContent = "Đang giải mã và ký...";
-    const bundle = JSON.parse(await keyFile.text());
-    if (bundle.version !== 1 || bundle.algorithm !== "RSA-PSS" || bundle.kdf !== "PBKDF2-SHA256" || bundle.cipher !== "AES-256-GCM") throw new Error("Định dạng tệp khóa không được hỗ trợ.");
-    if (!Number.isInteger(bundle.iterations) || bundle.iterations < 100000 || bundle.iterations > 1000000) throw new Error("Thông số KDF trong tệp khóa không hợp lệ.");
-    const material = await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveKey"]);
-    const aesKey = await crypto.subtle.deriveKey({name:"PBKDF2",salt:base64ToBytes(bundle.salt),iterations:bundle.iterations,hash:"SHA-256"},material,{name:"AES-GCM",length:256},false,["decrypt"]);
-    const pkcs8 = await crypto.subtle.decrypt({name:"AES-GCM",iv:base64ToBytes(bundle.iv)},aesKey,base64ToBytes(bundle.ciphertext));
-    const privateKey = await crypto.subtle.importKey("pkcs8",pkcs8,{name:"RSA-PSS",hash:"SHA-256"},false,["sign"]);
-    const publicKey = await crypto.subtle.importKey("spki",pemDecode(bundle.publicKeyPem),{name:"RSA-PSS",hash:"SHA-256"},true,["verify"]);
+    const {alg, privateKey, publicKey} = await unlockKeyBundle($("sign-private-key").files[0], $("sign-password").value);
     const fingerprint = await publicFingerprint(publicKey);
     const keyRecord = state.myKeys.find(k=>k.fingerprint===fingerprint && k.status==="active");
-    if (!keyRecord) throw new Error("Public Key tương ứng chưa được đăng ký trong tài khoản của bạn. Hãy vào Quản lý khóa và đăng ký trước khi ký.");
+    if (!keyRecord) throw new Error("Public Key tương ứng chưa được đăng ký (hoặc đã bị thu hồi) trong tài khoản của bạn. Hãy vào Quản lý khóa và đăng ký trước khi ký.");
     const pdfBytes = await pdfFile.arrayBuffer();
     const digest = await sha256(pdfBytes);
-    const signature = await crypto.subtle.sign({name:"RSA-PSS",saltLength:PSS_SALT_LENGTH},privateKey,pdfBytes);
-    const pairMatches = await crypto.subtle.verify({name:"RSA-PSS",saltLength:PSS_SALT_LENGTH},publicKey,signature,pdfBytes);
-    if (!pairMatches) throw new Error("Private Key và Public Key trong tệp khóa không khớp nhau.");
-    state.signatureBlob = new Blob([signature],{type:"application/octet-stream"});
-    state.signatureName = `${pdfFile.name.replace(/\.pdf$/i,"")}.sig`;
+    const signature = await signAndCheck(alg, privateKey, publicKey, pdfBytes);
+    const signatureBlob = new Blob([signature],{type:"application/octet-stream"});
+    const signatureName = `${pdfFile.name.replace(/\.pdf$/i,"")}.sig`;
+    // The server re-verifies the signature with the registered key and issues a signed receipt.
+    const form = new FormData();
+    form.append("pdf",pdfFile,pdfFile.name);
+    form.append("signature",signatureBlob,signatureName);
+    form.append("key_id",keyRecord.id);
+    const record = await api("/api/history/sign",{method:"POST",body:form});
+    state.signatureBlob = signatureBlob; state.signatureName = signatureName; state.signReceiptSeq = record.receipt_seq;
     $("signed-name").textContent = pdfFile.name;
     $("signed-hash").textContent = digest;
     $("signed-fingerprint").textContent = fingerprint;
+    $("signed-algorithm").textContent = `${algorithmLabel(alg)} · ${signature.length} byte`;
+    $("signed-receipt").textContent = `Biên nhận #${record.receipt_seq} (ECDSA P-256, có dấu thời gian)`;
+    $("download-sign-receipt").classList.remove("hidden");
     $("sign-empty").classList.add("hidden"); $("sign-result").classList.remove("hidden");
     $("sign-status").textContent = "Đã ký"; $("sign-status").className = "pill good";
-    const form = new FormData();
-    form.append("pdf",pdfFile,pdfFile.name);
-    form.append("signature",state.signatureBlob,state.signatureName);
-    form.append("key_id",keyRecord.id);
-    await api("/api/history/sign",{method:"POST",body:form});
-    showNotice("Ký số thành công. Chữ ký đã được máy chủ kiểm tra bằng Public Key thuộc tài khoản.","success");
+    showNotice("Ký số thành công. Máy chủ đã kiểm tra chữ ký bằng Public Key của tài khoản và cấp biên nhận.","success");
     refreshDashboard(); refreshHistory();
   } catch (err) { showNotice(err.message || "Không thể ký tài liệu.","error"); }
   finally { button.disabled = false; button.innerHTML = 'Tạo chữ ký số <span>→</span>'; }
 });
 $("download-signature").addEventListener("click",()=>{if(state.signatureBlob)downloadBlob(state.signatureBlob,state.signatureName);});
+$("download-sign-receipt").addEventListener("click",()=>{if(state.signReceiptSeq)downloadReceipt(state.signReceiptSeq);});
+function downloadReceipt(seq){return downloadProtected(`/api/receipts/${seq}`,`securesign-receipt-${seq}.json`).catch(e=>showNotice(e.message,"error"));}
 
 // --------------------------- Verification ---------------------------
 $("verify-button").addEventListener("click",async()=>{
@@ -451,6 +544,7 @@ $("verify-button").addEventListener("click",async()=>{
     $("verify-name").textContent=result.file_name;
     $("verify-hash").textContent=result.sha256;
     $("verify-fingerprint").textContent=result.fingerprint;
+    $("verify-algorithm").textContent=algorithmLabel(result.algorithm);
     $("trust-box").textContent=result.trusted?`Khóa đã được bạn đánh dấu tin cậy. Chủ sở hữu: ${result.key_owner_name||"Không rõ"} .`:result.key_owner_name?`Chữ ký được kiểm tra bằng khóa của ${result.key_owner_name}, nhưng bạn chưa đánh dấu khóa này là tin cậy.`:"Public Key tải lên chưa được liên kết với khóa trong danh bạ. Chưa xác minh được danh tính người sở hữu.";
     $("verify-status").textContent=result.valid?"HỢP LỆ":"KHÔNG HỢP LỆ";$("verify-status").className=result.valid?"pill good":"pill bad";
     showNotice(result.valid?"Xác thực mật mã thành công.":"Xác thực thất bại: chữ ký sai hoặc tài liệu đã thay đổi.",result.valid?"success":"error");
@@ -458,6 +552,39 @@ $("verify-button").addEventListener("click",async()=>{
   }catch(err){showNotice(err.message||"Không thể xác thực chữ ký.","error");}
   finally{button.disabled=false;button.innerHTML='Xác thực chữ ký <span>→</span>';}
 });
+
+// --------------------------- Evidence receipts ---------------------------
+const EVENT_LABELS = {PDF_SIGNED:"Ký tài liệu PDF", DOCUMENT_SENT:"Gửi tài liệu", DOCUMENT_VERIFIED:"Người nhận xác thực tài liệu", KEY_REGISTERED:"Đăng ký khóa", KEY_REVOKED:"Thu hồi khóa"};
+function receiptRow(label, value, code=false){
+  const row=document.createElement("div");row.className="detail-row";
+  const l=document.createElement("span");l.textContent=label;
+  const v=document.createElement(code?"code":"strong");v.textContent=value??"—";
+  row.append(l,v);return row;
+}
+$("verify-receipt-button").addEventListener("click",async()=>{
+  const button=$("verify-receipt-button");
+  try{
+    const file=$("receipt-file").files[0];
+    if(!file)throw new Error("Vui lòng chọn tệp biên nhận .json.");
+    let bundle;try{bundle=JSON.parse(await file.text());}catch{throw new Error("Tệp biên nhận không phải JSON hợp lệ.");}
+    button.disabled=true;button.textContent="Đang kiểm tra...";
+    const result=await api("/api/receipts/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(bundle)});
+    const box=$("receipt-result");box.innerHTML="";
+    const banner=document.createElement("div");banner.className=result.valid?"success-banner":"success-banner invalid";
+    const sym=document.createElement("span");sym.textContent=result.valid?"✓":"!";
+    const txt=document.createElement("div");const h=document.createElement("strong");h.textContent=result.valid?"Biên nhận hợp lệ":"Biên nhận không hợp lệ";
+    const m=document.createElement("small");m.textContent=result.reason;txt.append(h,m);banner.append(sym,txt);box.append(banner);
+    const r=result.receipt||bundle.receipt||{};const d=r.details||{};
+    box.append(receiptRow("Số thứ tự trong sổ",r.seq?`#${r.seq}`:"—"),receiptRow("Sự kiện",EVENT_LABELS[r.event]||r.event),
+      receiptRow("Thời điểm (UTC, do máy chủ ký)",r.time),receiptRow("Người thực hiện",r.actor?`${r.actor.name||""} · ${r.actor.email||""}`:"—"),
+      receiptRow("Tài liệu",d.file_name||"—"),receiptRow("SHA-256 tài liệu",d.document_sha256||"—",true),
+      receiptRow("Fingerprint khóa người ký",d.key_fingerprint||d.fingerprint||"—",true),receiptRow("Khóa máy chủ",result.server_key_fingerprint||"—",true));
+    $("receipt-empty").classList.add("hidden");box.classList.remove("hidden");
+    $("receipt-status").textContent=result.valid?"HỢP LỆ":"KHÔNG HỢP LỆ";$("receipt-status").className=result.valid?"pill good":"pill bad";
+  }catch(err){showNotice(err.message||"Không thể kiểm tra biên nhận.","error");}
+  finally{button.disabled=false;button.innerHTML='Kiểm tra biên nhận <span>→</span>';}
+});
+$("receipt-file").addEventListener("change",()=>{$("receipt-result").classList.add("hidden");$("receipt-empty").classList.remove("hidden");$("receipt-status").textContent="Chưa kiểm tra";$("receipt-status").className="pill neutral";});
 
 // --------------------------- Send and receive documents ---------------------------
 $("send-button").addEventListener("click",async()=>{
@@ -473,7 +600,7 @@ $("send-button").addEventListener("click",async()=>{
     const form=new FormData();form.append("recipient_email",recipient);form.append("key_id",keyId);form.append("message",$("send-message").value.trim());form.append("pdf",pdf,pdf.name);form.append("signature",sig,sig.name);
     const data=await api("/api/documents/send",{method:"POST",body:form});
     showNotice(`Đã gửi “${data.item.file_name}” đến ${data.item.recipient.email}. Máy chủ đã xác minh chữ ký trước khi gửi.`,"success");
-    $("send-recipient").value="";$("send-pdf").value="";$("send-signature").value="";$("send-message").value="";
+    $("send-recipient").value="";clearFile($("send-pdf"));clearFile($("send-signature"));$("send-message").value="";
     refreshDashboard();loadDocuments("sent");
   }catch(err){showNotice(err.message||"Không thể gửi tài liệu.","error");}
   finally{button.disabled=false;button.innerHTML='Kiểm tra và gửi tài liệu <span>→</span>';}
@@ -508,7 +635,9 @@ async function loadDocuments(mode="inbox"){
       const verifyBtn=document.createElement("button");verifyBtn.className="btn btn-outline small";verifyBtn.textContent="Kiểm tra";verifyBtn.addEventListener("click",()=>verifyDocument(item.id));
       const pdfBtn=document.createElement("button");pdfBtn.className="btn btn-secondary small";pdfBtn.textContent="PDF";pdfBtn.addEventListener("click",()=>downloadProtected(`/api/documents/${item.id}/pdf`,item.file_name).catch(e=>showNotice(e.message,"error")));
       const sigBtn=document.createElement("button");sigBtn.className="btn btn-outline small";sigBtn.textContent=".sig";sigBtn.addEventListener("click",()=>downloadProtected(`/api/documents/${item.id}/signature`,`${item.file_name.replace(/\.pdf$/i,"")}.sig`).catch(e=>showNotice(e.message,"error")));
-      wrap.append(verifyBtn,pdfBtn,sigBtn);actions.append(wrap);tr.append(date,file,person,status,actions);body.append(tr);
+      wrap.append(verifyBtn,pdfBtn,sigBtn);
+      if(item.receipt_seq){const rc=document.createElement("button");rc.className="btn btn-outline small";rc.textContent="Biên nhận";rc.title=`Biên nhận gửi tài liệu #${item.receipt_seq}`;rc.addEventListener("click",()=>downloadReceipt(item.receipt_seq));wrap.append(rc);}
+      actions.append(wrap);tr.append(date,file,person,status,actions);body.append(tr);
     });
   }catch(err){showNotice(`Không tải được hộp thư: ${err.message}`,"error");}
 }
@@ -519,12 +648,14 @@ $("refresh-documents").addEventListener("click",()=>loadDocuments(state.document
 async function refreshHistory(){
   try{
     const data=await api("/api/history");const body=$("history-body");body.innerHTML="";
-    if(!data.items.length){const tr=document.createElement("tr"),td=document.createElement("td");td.colSpan=5;td.className="empty-cell";td.textContent="Chưa có dữ liệu.";tr.append(td);body.append(tr);return;}
+    if(!data.items.length){const tr=document.createElement("tr"),td=document.createElement("td");td.colSpan=6;td.className="empty-cell";td.textContent="Chưa có dữ liệu.";tr.append(td);body.append(tr);return;}
     data.items.forEach(item=>{
       const tr=document.createElement("tr");
       const values=[new Date(item.created_at).toLocaleString("vi-VN"),item.event_type,item.file_name||item.details||"—",item.result,item.sha256?item.sha256.slice(0,20)+"…":"—"];
       values.forEach((value,index)=>{const td=document.createElement("td");if(index===1){const tag=document.createElement("span");tag.className=`event-tag ${item.event_type.toLowerCase()}`;tag.textContent=value;td.append(tag);}else if(index===3){const tag=document.createElement("span");tag.className=`result-tag ${item.result.toLowerCase()}`;tag.textContent=value;td.append(tag);}else if(index===4){const code=document.createElement("code");code.textContent=value;td.append(code);}else td.textContent=value;tr.append(td);});
-      body.append(tr);
+      const rc=document.createElement("td");
+      if(item.receipt_seq){const b=document.createElement("button");b.className="btn btn-outline small";b.textContent=`#${item.receipt_seq} ↓`;b.title="Tải biên nhận do máy chủ ký";b.addEventListener("click",()=>downloadReceipt(item.receipt_seq));rc.append(b);}else rc.textContent="—";
+      tr.append(rc);body.append(tr);
     });
   }catch(err){showNotice(`Không tải được lịch sử: ${err.message}`,"error");}
 }
@@ -561,6 +692,28 @@ async function updateAdminUser(id,payload){
   catch(err){showNotice(err.message,"error");}
 }
 $("admin-search").addEventListener("change",loadAdmin);
+
+// --------------------------- Evidence log (admin) ---------------------------
+async function loadEvidence(){
+  if(state.user?.role!=="admin")return;
+  const box=$("evidence-check");
+  try{
+    box.className="evidence-check";box.textContent="Đang kiểm tra chuỗi bằng chứng...";
+    const data=await api("/api/admin/evidence");const c=data.check;
+    box.className=`evidence-check ${c.ok?"ok":"broken"}`;
+    box.textContent=c.ok?`✓ ${c.reason} ${c.count} mục, mỗi mục có chữ ký ECDSA của máy chủ và liên kết SHA-256 với mục trước. Hash đầu chuỗi: ${(c.head_hash||"").slice(0,16)}…`
+                        :`✗ Phát hiện giả mạo tại mục #${c.broken_at}: ${c.reason} (${c.count} mục đầu vẫn nguyên vẹn).`;
+    const body=$("evidence-body");body.innerHTML="";
+    if(!data.items.length){const tr=document.createElement("tr"),td=document.createElement("td");td.colSpan=5;td.className="empty-cell";td.textContent="Chưa có mục nào.";tr.append(td);body.append(tr);return;}
+    data.items.forEach(e=>{
+      const tr=document.createElement("tr");
+      const cells=[`#${e.seq}`,EVENT_LABELS[e.event_type]||e.event_type,e.actor,new Date(e.created_at).toLocaleString("vi-VN"),e.entry_hash.slice(0,24)+"…"];
+      cells.forEach((v,i)=>{const td=document.createElement("td");if(i===4){const code=document.createElement("code");code.textContent=v;td.append(code);}else td.textContent=v;tr.append(td);});
+      body.append(tr);
+    });
+  }catch(err){box.className="evidence-check broken";box.textContent=`Không kiểm tra được: ${err.message}`;}
+}
+$("check-evidence").addEventListener("click",loadEvidence);
 
 async function init(){
   await checkHealth();

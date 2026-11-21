@@ -46,3 +46,18 @@ def test_wrong_public_key_fails():
     signature = sign(private_key, pdf)
     result = verify_signature(pdf, signature, wrong_public_pem)
     assert result["valid"] is False
+
+
+def test_ecdsa_p256_signature_and_policy():
+    from cryptography.hazmat.primitives.asymmetric import ec
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    pdf = b"%PDF-1.7\\nECDSA example"
+    sig = key.sign(pdf, ec.ECDSA(hashes.SHA256()))
+    ok = verify_signature(pdf, sig, pem)
+    assert ok["valid"] is True and ok["algorithm"] == "ECDSA-P256"
+    assert verify_signature(pdf + b"x", sig, pem)["valid"] is False
+    # Only P-256 is accepted: other curves are rejected by policy.
+    p384 = ec.generate_private_key(ec.SECP384R1()).public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    with pytest.raises(ValueError):
+        verify_signature(pdf, sig, p384)

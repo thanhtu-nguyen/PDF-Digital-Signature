@@ -36,6 +36,15 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
 SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "true").lower() == "true"
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+# Only trust X-Forwarded-For when a reverse proxy that overwrites it sits in front
+# of the app (Vercel, or Caddy in docker-compose). Otherwise clients can spoof it.
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true" if IS_VERCEL else "false").lower() == "true"
+# Security Lab: the attack/defense demonstration used in the course report.
+# On by default for local development, off by default in production.
+LAB_ENABLED = os.getenv("SECURESIGN_LAB_ENABLED", "false" if APP_ENV == "production" else "true").lower() == "true"
+# Demo accounts (admin/alice/bob/charlie, see README) so the app can be tested without registering.
+# Their passwords are public, so they are on by default only outside production.
+DEMO_ACCOUNTS = os.getenv("SECURESIGN_DEMO_ACCOUNTS", "false" if APP_ENV == "production" else "true").lower() == "true"
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
 
@@ -53,6 +62,8 @@ if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
     raise RuntimeError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
 if APP_ENV == "production" and not COOKIE_SECURE:
     raise RuntimeError("COOKIE_SECURE must be true when APP_ENV=production")
+if APP_ENV == "production" and DEMO_ACCOUNTS:
+    raise RuntimeError("Demo accounts have public passwords and must not be enabled in production")
 if APP_ENV == "production" and len(ADMIN_PASSWORD) < 16:
     raise RuntimeError("ADMIN_PASSWORD must contain at least 16 characters in production")
 if APP_ENV == "production" and not REQUIRE_EMAIL_VERIFICATION:

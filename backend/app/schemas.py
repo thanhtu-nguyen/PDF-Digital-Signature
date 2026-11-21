@@ -21,7 +21,7 @@ class RegisterKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     public_key_pem: str = Field(min_length=40, max_length=10000)
     challenge_id: str = Field(min_length=36, max_length=36)
-    proof_signature: str = Field(min_length=300, max_length=1000)
+    proof_signature: str = Field(min_length=40, max_length=1000)  # ECDSA DER ~96 chars, RSA 344-684
 
 
 class AdminUserUpdate(BaseModel):

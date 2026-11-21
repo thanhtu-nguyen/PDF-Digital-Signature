@@ -4,11 +4,11 @@ import uuid
 
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint,
-    create_engine, event, select
+    create_engine, event, select, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
-from .config import DATABASE_URL, ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, ADMIN_RESET_PASSWORD
+from .config import DATABASE_URL, ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, ADMIN_RESET_PASSWORD, DEMO_ACCOUNTS
 
 
 def utc_now() -> datetime:
@@ -127,6 +127,31 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
+class ServerKey(Base):
+    """Server-side signing key for evidence receipts (unless SECURESIGN_RECEIPT_KEY_PEM is set)."""
+    __tablename__ = "server_keys"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    purpose: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    private_key_pem: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class EvidenceEntry(Base):
+    """Append-only, hash-chained, server-signed evidence log (see evidence.py)."""
+    __tablename__ = "evidence_entries"
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    event_type: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    document_id: Mapped[str] = mapped_column(String(36), default="", index=True, nullable=False)
+    audit_id: Mapped[str] = mapped_column(String(36), default="", index=True, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    entry_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    signature: Mapped[str] = mapped_column(Text, nullable=False)
+    server_key_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
 Index("ix_documents_inbox", Document.recipient_id, Document.created_at)
 Index("ix_documents_sent", Document.sender_id, Document.created_at)
 Index("ix_audit_actor_created", AuditLog.actor_id, AuditLog.created_at)
@@ -189,6 +214,11 @@ def init_db():
                 if ADMIN_RESET_PASSWORD:
                     admin.password_hash = hash_password(ADMIN_PASSWORD)
             db.flush()
+        from .evidence import server_private_key
+        server_private_key(db)              # create the receipt signing key once, at start-up
+        if DEMO_ACCOUNTS:
+            from .demo_seed import seed_demo_accounts
+            seed_demo_accounts(db)
 
 
 def get_db():

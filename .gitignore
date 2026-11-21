@@ -29,3 +29,8 @@ storage/*
 .vercel/
 .env.local
 .env.*.local
+demos/output/
+
+# Demo data is public on purpose (see README "Demo accounts")
+!demo_data/*.key.json
+!demo_data/*.pdf

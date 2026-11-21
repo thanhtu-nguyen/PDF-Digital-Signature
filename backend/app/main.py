@@ -1,7 +1,6 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import timedelta
-import base64
 import hashlib
 import secrets
 import time
@@ -12,21 +11,21 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, or_, select, text, update
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import (
     ALLOWED_ORIGINS, APP_ENV, COOKIE_SECURE, CSRF_COOKIE_NAME,
-    FRONTEND_DIR, MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, REQUIRE_EMAIL_VERIFICATION,
-    RESEND_API_KEY, SMTP_FROM, SMTP_HOST,
+    FRONTEND_DIR, LAB_ENABLED, MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, REQUIRE_EMAIL_VERIFICATION,
+    RESEND_API_KEY, SMTP_FROM, SMTP_HOST, TRUST_PROXY_HEADERS,
     UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
 )
-from .crypto_service import load_public_key, public_key_fingerprint, verify_signature
+from .crypto_service import (
+    algorithm_of_pem, key_algorithm, load_public_key, public_key_fingerprint,
+    verify_proof_of_possession, verify_signature,
+)
 from .database import (
-    AuditLog, Document, EmailToken, KeyChallenge, PublicKey, TrustedKey, User, UserSession,
+    AuditLog, Document, EmailToken, EvidenceEntry, KeyChallenge, PublicKey, TrustedKey, User, UserSession,
     add_audit, get_db, init_db, utc_now,
 )
 from .schemas import (
@@ -34,9 +33,13 @@ from .schemas import (
     RegisterRequest, ResendVerificationRequest, ResetPasswordRequest,
 )
 from .email_service import send_email
+from .evidence import (
+    entry_dict, receipt_bundle, record_evidence_and_commit, server_private_key,
+    server_public_key_pem, verify_chain, verify_receipt_bundle, key_fingerprint,
+)
 from .storage_service import delete_file, read_file, save_file, storage_status
 from .security import (
-    clear_session_cookies, get_current_user, hash_password, issue_session,
+    DUMMY_PASSWORD_HASH, clear_session_cookies, get_current_user, hash_password, issue_session,
     require_admin, require_csrf, user_payload, verify_password,
 )
 
@@ -49,7 +52,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="SecureSign Cloud API",
     description="Multi-user PDF digital signature platform using RSA-PSS and SHA-256.",
-    version="2.1.0",
+    version="2.2.0",
     docs_url=None if APP_ENV == "production" else "/api/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -68,14 +71,27 @@ _RATE_RULES = {
 _RATE_BUCKETS: dict[str, tuple[float, int]] = {}
 
 
+def client_address(request: Request) -> str:
+    """Client IP used as the rate-limit key.
+
+    X-Forwarded-For is written by the CLIENT unless a trusted reverse proxy
+    (Caddy, Vercel) overwrites it. Trusting it blindly lets an attacker send a
+    new fake IP with every request and never hit the login limit, so it is only
+    used when TRUST_PROXY_HEADERS is enabled for a deployment behind a proxy.
+    """
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     rule = _RATE_RULES.get(request.url.path)
     if rule and request.method == "POST":
         limit, window = rule
-        forwarded = request.headers.get("x-forwarded-for", "")
-        # The left-most X-Forwarded-For entry is the original client address.
-        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+        client_ip = client_address(request)
         bucket_key = f"{request.url.path}:{hashlib.sha256(client_ip.encode()).hexdigest()[:24]}"
         retry_after = window
         if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
@@ -137,6 +153,10 @@ async def security_middleware(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    if request.url.path == "/lab" or request.url.path.startswith("/static/lab/"):
+        # The Security Lab colours value fingerprints with inline style attributes.
+        # Scripts stay restricted to 'self'; only inline *styles* are allowed here.
+        csp = csp.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")
     if request.url.path == "/api/docs" and APP_ENV != "production":
         csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     response.headers["Content-Security-Policy"] = csp
@@ -151,6 +171,16 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 @app.get("/", include_in_schema=False)
 async def home():
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+if LAB_ENABLED:
+    from .lab import router as lab_router
+
+    app.include_router(lab_router)
+
+    @app.get("/lab", include_in_schema=False)
+    async def security_lab_page():
+        return FileResponse(FRONTEND_DIR / "lab" / "index.html")
 
 
 def _iso(value):
@@ -208,7 +238,8 @@ async def _read_pdf(upload: UploadFile):
 
 async def _read_signature(upload: UploadFile):
     data = await upload.read(4097)
-    if len(data) < 256 or len(data) > 4096:
+    # ECDSA P-256 (DER) is ~70 bytes, RSA-PSS is 256-512 bytes.
+    if len(data) < 8 or len(data) > 4096:
         raise HTTPException(status_code=400, detail="Tệp chữ ký có kích thước không hợp lệ.")
     return data
 
@@ -219,6 +250,7 @@ def _key_payload(key: PublicKey, owner: User, trusted: bool = False):
         "name": key.name,
         "fingerprint": key.fingerprint,
         "key_size": key.key_size,
+        "algorithm": algorithm_of_pem(key.public_key_pem),
         "status": key.status,
         "created_at": _iso(key.created_at),
         "owner_id": owner.id,
@@ -243,8 +275,11 @@ def _document_payload(db: Session, document: Document, viewer_id: str):
         "verified_at": _iso(document.verified_at),
         "sender": {"id": sender.id, "name": sender.full_name, "email": sender.email} if sender else None,
         "recipient": {"id": recipient.id, "name": recipient.full_name, "email": recipient.email} if recipient else None,
-        "key": {"id": key.id, "name": key.name, "fingerprint": key.fingerprint, "status": key.status} if key else None,
+        "key": {"id": key.id, "name": key.name, "fingerprint": key.fingerprint, "status": key.status,
+                "algorithm": algorithm_of_pem(key.public_key_pem)} if key else None,
         "direction": "sent" if document.sender_id == viewer_id else "received",
+        "receipt_seq": db.scalar(select(EvidenceEntry.seq).where(
+            EvidenceEntry.document_id == document.id, EvidenceEntry.event_type == "DOCUMENT_SENT")),
     }
 
 
@@ -266,8 +301,9 @@ def health_check(db: Session = Depends(get_db)):
         "database": "ok",
         "storage": storage_status(),
         "rate_limit": "upstash" if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN else "local-dev-only",
+        "security_lab": LAB_ENABLED,
         "service": "SecureSign Cloud",
-        "version": "2.1.0",
+        "version": "2.2.0",
     }
 
 
@@ -304,7 +340,10 @@ def register(payload: RegisterRequest, request: Request, response: Response, db:
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     email = str(payload.email).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
-    if not user or not verify_password(user.password_hash, payload.password):
+    # Always run one Argon2 verification, even for unknown emails, so the
+    # response time does not reveal which emails have an account.
+    password_ok = verify_password(user.password_hash if user else DUMMY_PASSWORD_HASH, payload.password)
+    if not user or not password_ok:
         raise HTTPException(status_code=401, detail="Email hoặc mật khẩu không chính xác.")
     if user.status == "pending_verification":
         raise HTTPException(status_code=403, detail="Email chưa được xác minh. Hãy mở email xác minh hoặc yêu cầu gửi lại.")
@@ -473,15 +512,7 @@ def register_key(payload: RegisterKeyRequest, user: User = Depends(require_csrf)
             raise HTTPException(status_code=400, detail="Challenge không hợp lệ, đã hết hạn hoặc đã được sử dụng.")
         if hashlib.sha256(challenge.challenge_value.encode("utf-8")).hexdigest() != challenge.challenge_hash:
             raise HTTPException(status_code=400, detail="Challenge không hợp lệ.")
-        try:
-            proof = base64.b64decode(payload.proof_signature, validate=True)
-            public_key.verify(
-                proof,
-                challenge.challenge_value.encode("utf-8"),
-                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32),
-                hashes.SHA256(),
-            )
-        except (ValueError, InvalidSignature):
+        if not verify_proof_of_possession(public_key, challenge.challenge_value, payload.proof_signature):
             raise HTTPException(status_code=400, detail="Không chứng minh được quyền sở hữu Private Key.")
         challenge.used_at = utc_now()
         existing = db.scalar(select(PublicKey).where(PublicKey.fingerprint == fingerprint))
@@ -497,9 +528,12 @@ def register_key(payload: RegisterKeyRequest, user: User = Depends(require_csrf)
         else:
             key = PublicKey(owner_id=user.id, name=payload.name.strip(), fingerprint=fingerprint, public_key_pem=payload.public_key_pem, key_size=public_key.key_size, status="active")
             db.add(key)
-            add_audit(db, user.id, "KEY_REGISTERED", "public_key", key.id, fingerprint=fingerprint)
-            db.commit()
-        return {"message": "Đã đăng ký Public Key vào tài khoản.", "item": {"id": key.id, "name": key.name, "fingerprint": key.fingerprint, "key_size": key.key_size, "status": key.status}}
+            db.flush()
+            audit = add_audit(db, user.id, "KEY_REGISTERED", "public_key", key.id, fingerprint=fingerprint)
+            record_evidence_and_commit(db, "KEY_REGISTERED", user, {
+                "key_id": key.id, "key_name": key.name, "fingerprint": fingerprint,
+                "algorithm": key_algorithm(public_key), "proof_of_possession": "verified one-time challenge"}, audit_id=audit.id)
+        return {"message": "Đã đăng ký Public Key vào tài khoản.", "item": {"id": key.id, "name": key.name, "fingerprint": key.fingerprint, "key_size": key.key_size, "algorithm": key_algorithm(public_key), "status": key.status}}
     except HTTPException:
         raise
     except Exception as exc:
@@ -509,7 +543,7 @@ def register_key(payload: RegisterKeyRequest, user: User = Depends(require_csrf)
 @app.get("/api/keys/mine")
 def list_my_keys(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     keys = db.scalars(select(PublicKey).where(PublicKey.owner_id == user.id).order_by(PublicKey.created_at.desc())).all()
-    return {"items": [{"id": k.id, "name": k.name, "fingerprint": k.fingerprint, "key_size": k.key_size, "status": k.status, "created_at": _iso(k.created_at)} for k in keys]}
+    return {"items": [{"id": k.id, "name": k.name, "fingerprint": k.fingerprint, "key_size": k.key_size, "algorithm": algorithm_of_pem(k.public_key_pem), "status": k.status, "created_at": _iso(k.created_at)} for k in keys]}
 
 
 @app.get("/api/keys/directory")
@@ -524,7 +558,7 @@ def key_directory(user: User = Depends(get_current_user), db: Session = Depends(
     for key, owner in rows:
         items.append({
             "id": key.id, "name": key.name, "fingerprint": key.fingerprint,
-            "key_size": key.key_size, "created_at": _iso(key.created_at),
+            "key_size": key.key_size, "algorithm": algorithm_of_pem(key.public_key_pem), "created_at": _iso(key.created_at),
             "owner_id": owner.id, "owner_name": owner.full_name,
             "is_mine": key.owner_id == user.id,
             "trusted": key.id in trusted_ids,
@@ -580,8 +614,9 @@ def revoke_key(key_id: str, user: User = Depends(require_csrf), db: Session = De
     if key.status != "revoked":
         key.status = "revoked"
         key.revoked_at = utc_now()
-        add_audit(db, user.id, "KEY_REVOKED", "public_key", key.id, fingerprint=key.fingerprint)
-        db.commit()
+        audit = add_audit(db, user.id, "KEY_REVOKED", "public_key", key.id, fingerprint=key.fingerprint)
+        record_evidence_and_commit(db, "KEY_REVOKED", user, {"key_id": key.id, "fingerprint": key.fingerprint,
+                                                             "revoked_at": _iso(key.revoked_at)}, audit_id=audit.id)
     return {"message": "Đã thu hồi khóa. Khóa không còn được dùng để gửi tài liệu mới."}
 
 
@@ -600,9 +635,12 @@ async def record_signature(
     result = verify_signature(pdf_bytes, signature_bytes, key.public_key_pem.encode("utf-8"))
     if not result["valid"]:
         raise HTTPException(status_code=400, detail="Chữ ký không khớp với PDF và Public Key đã đăng ký.")
-    add_audit(db, user.id, "SIGN", "document", "", file_name, result["sha256"], key.fingerprint, "CREATED", "Chữ ký được tạo trong trình duyệt; máy chủ chỉ xác minh và ghi nhận.")
-    db.commit()
-    return {"message": "Đã xác minh và ghi nhận sự kiện ký.", "sha256": result["sha256"], "fingerprint": key.fingerprint}
+    audit = add_audit(db, user.id, "SIGN", "document", "", file_name, result["sha256"], key.fingerprint, "CREATED", "Chữ ký được tạo trong trình duyệt; máy chủ chỉ xác minh và ghi nhận.")
+    evidence = record_evidence_and_commit(db, "PDF_SIGNED", user, {
+        "file_name": file_name, "document_sha256": result["sha256"], "signature_sha256": hashlib.sha256(signature_bytes).hexdigest(),
+        "key_fingerprint": key.fingerprint, "algorithm": result["algorithm"], "signature_valid": True}, audit_id=audit.id)
+    return {"message": "Đã xác minh và ghi nhận sự kiện ký.", "sha256": result["sha256"], "fingerprint": key.fingerprint,
+            "algorithm": result["algorithm"], "receipt_seq": evidence.seq}
 
 
 @app.post("/api/verify")
@@ -649,10 +687,13 @@ async def verify_pdf(
 @app.get("/api/history")
 def list_history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(AuditLog).where(AuditLog.actor_id == user.id).order_by(AuditLog.created_at.desc()).limit(200)).all()
+    receipts = dict(db.execute(select(EvidenceEntry.audit_id, EvidenceEntry.seq).where(
+        EvidenceEntry.audit_id.in_([r.id for r in rows] or [""]))).all())
     return {"items": [{
         "id": r.id, "event_type": r.event_type, "file_name": r.file_name,
         "sha256": r.sha256, "key_fingerprint": r.key_fingerprint,
         "result": r.result, "details": r.details, "created_at": _iso(r.created_at),
+        "receipt_seq": receipts.get(r.id),
     } for r in rows]}
 
 
@@ -696,8 +737,11 @@ async def send_document(
             sha256=result["sha256"], message=message.strip()[:1000], verification_status="pending",
         )
         db.add(document)
-        add_audit(db, user.id, "DOCUMENT_SENT", "document", document_id, file_name, result["sha256"], key.fingerprint, "SENT", f"Gửi cho {recipient.email}")
-        db.commit()
+        audit = add_audit(db, user.id, "DOCUMENT_SENT", "document", document_id, file_name, result["sha256"], key.fingerprint, "SENT", f"Gửi cho {recipient.email}")
+        record_evidence_and_commit(db, "DOCUMENT_SENT", user, {
+            "document_id": document_id, "file_name": file_name, "document_sha256": result["sha256"],
+            "signature_sha256": hashlib.sha256(signature_bytes).hexdigest(), "key_fingerprint": key.fingerprint,
+            "algorithm": result["algorithm"], "recipient": recipient.email}, document_id=document_id, audit_id=audit.id)
     except Exception:
         db.rollback()
         if signature_saved:
@@ -735,8 +779,11 @@ async def verify_received_document(document_id: str, user: User = Depends(requir
     trusted = key.status == "active" and db.scalar(select(TrustedKey.id).where(TrustedKey.user_id == user.id, TrustedKey.key_id == key.id)) is not None
     document.verification_status = "valid" if result["valid"] else "invalid"
     document.verified_at = utc_now()
-    add_audit(db, user.id, "DOCUMENT_VERIFY", "document", document.id, document.file_name, result["sha256"], key.fingerprint, "VALID" if result["valid"] else "INVALID", "Khóa đã được người nhận đánh dấu tin cậy." if trusted else "Chữ ký hợp lệ không đồng nghĩa danh tính đã được người nhận tin cậy.")
-    db.commit()
+    audit = add_audit(db, user.id, "DOCUMENT_VERIFY", "document", document.id, document.file_name, result["sha256"], key.fingerprint, "VALID" if result["valid"] else "INVALID", "Khóa đã được người nhận đánh dấu tin cậy." if trusted else "Chữ ký hợp lệ không đồng nghĩa danh tính đã được người nhận tin cậy.")
+    record_evidence_and_commit(db, "DOCUMENT_VERIFIED", user, {
+        "document_id": document.id, "file_name": document.file_name, "document_sha256": result["sha256"],
+        "key_fingerprint": key.fingerprint, "signature_valid": result["valid"], "key_trusted_by_verifier": trusted},
+        document_id=document.id, audit_id=audit.id)
     return {"valid": result["valid"], "trusted": trusted, "message": result["message"], "sha256": result["sha256"], "fingerprint": key.fingerprint, "sender_name": db.get(User, document.sender_id).full_name}
 
 
@@ -776,6 +823,43 @@ async def download_document_signature(document_id: str, user: User = Depends(get
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# --------------------------- Evidence receipts (non-repudiation) ---------------------------
+
+@app.get("/api/receipts/server-key")
+def receipt_server_key(db: Session = Depends(get_db)):
+    """Public: the key that signs every receipt, so anyone can verify receipts offline."""
+    key = server_private_key(db)
+    db.commit()
+    return {"algorithm": "ECDSA-P256-SHA256", "public_key_pem": server_public_key_pem(db),
+            "fingerprint": key_fingerprint(key.public_key())}
+
+
+@app.get("/api/receipts/{seq}")
+def download_receipt(seq: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = db.get(EvidenceEntry, seq)
+    allowed = record is not None and (user.role == "admin" or record.actor_id == user.id)
+    if record is not None and not allowed and record.document_id:
+        document = db.get(Document, record.document_id)
+        allowed = document is not None and user.id in {document.sender_id, document.recipient_id}
+    if not allowed:
+        raise HTTPException(status_code=404, detail="Không tìm thấy biên nhận hoặc bạn không có quyền xem.")
+    from fastapi.responses import JSONResponse
+    return JSONResponse(receipt_bundle(entry_dict(record), server_public_key_pem(db)), headers={
+        "Content-Disposition": f'attachment; filename="securesign-receipt-{seq}.json"', "Cache-Control": "private, no-store"})
+
+
+@app.post("/api/receipts/verify")
+def verify_receipt(bundle: dict, user: User = Depends(require_csrf), db: Session = Depends(get_db)):
+    """Check a receipt file: server signature, and that the entry is really in this server's chain."""
+    result = verify_receipt_bundle(bundle, server_private_key(db).public_key())
+    if result["valid"]:
+        stored = db.get(EvidenceEntry, result["receipt"].get("seq"))
+        result["in_chain"] = stored is not None and stored.entry_hash == bundle.get("entry_hash")
+        if not result["in_chain"]:
+            result.update(valid=False, reason="Chữ ký đúng nhưng mục này không còn khớp với sổ bằng chứng của máy chủ.")
+    return result
 
 
 # --------------------------- Administration ---------------------------
@@ -818,6 +902,19 @@ def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: User = Depe
     add_audit(db, admin.id, "ADMIN_USER_UPDATED", "user", target.id, result="UPDATED", details=f"role {old_role}->{next_role}; status {old_status}->{next_status}")
     db.commit()
     return {"message": "Đã cập nhật tài khoản.", "user": user_payload(target)}
+
+
+@app.get("/api/admin/evidence")
+def admin_evidence(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Integrity check of the whole hash chain plus the latest entries."""
+    check = verify_chain(db)
+    latest = db.scalars(select(EvidenceEntry).order_by(EvidenceEntry.seq.desc()).limit(15)).all()
+    items = []
+    for r in latest:
+        actor = db.get(User, r.actor_id) if r.actor_id else None
+        items.append({"seq": r.seq, "event_type": r.event_type, "created_at": _iso(r.created_at),
+                      "actor": actor.email if actor else "—", "entry_hash": r.entry_hash})
+    return {"check": check, "items": items}
 
 
 @app.get("/api/admin/overview")

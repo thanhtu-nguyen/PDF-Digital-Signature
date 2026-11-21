@@ -17,6 +17,10 @@ from .database import User, UserSession, get_db, utc_now
 _password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
 
 
+# Hash of a random throw-away password; used to equalise login timing for unknown emails.
+DUMMY_PASSWORD_HASH = _password_hasher.hash(secrets.token_urlsafe(32))
+
+
 def hash_password(password: str) -> str:
     return _password_hasher.hash(password)
 
