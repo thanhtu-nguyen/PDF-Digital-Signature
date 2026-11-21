@@ -1,0 +1,74 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-securesign}
+      POSTGRES_USER: ${POSTGRES_USER:-securesign}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-securesign} -d ${POSTGRES_DB:-securesign}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [private]
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      REQUIRE_EMAIL_VERIFICATION: "true"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-securesign}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securesign}
+      SECURESIGN_STORAGE_DIR: /app/storage
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: lax
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      PUBLIC_BASE_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      ADMIN_RESET_PASSWORD: ${ADMIN_RESET_PASSWORD:-false}
+      ADMIN_NAME: ${ADMIN_NAME:-SecureSign Administrator}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:?Set SMTP_FROM in .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SECURESIGN_MAX_UPLOAD_BYTES: ${SECURESIGN_MAX_UPLOAD_BYTES:-4194304}
+    volumes:
+      - app_storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [private]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+    networks: [private]
+
+volumes:
+  postgres_data:
+  app_storage:
+  caddy_data:
+  caddy_config:
+
+networks:
+  private:
+    driver: bridge

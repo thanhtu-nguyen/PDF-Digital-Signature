@@ -1,0 +1,14 @@
+.venv
+venv
+__pycache__
+.pytest_cache
+tests
+storage
+.env
+.env.*
+*.db
+*.sqlite3
+*.pdf
+*.sig
+*.pem
+*.key
